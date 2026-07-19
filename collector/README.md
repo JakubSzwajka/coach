@@ -59,9 +59,9 @@ evening activities:
 
 ```cron
 # finalize yesterday + morning readiness
-30 6 * * *  /Users/jakubszwajka/DEV/priv/garmin-coach/collector/run.sh >> /tmp/garmin-coach.log 2>&1
+30 6 * * *  /path/to/garmin-coach/collector/run.sh >> /tmp/garmin-coach.log 2>&1
 # pick up the day's activities
-0 21 * * *  /Users/jakubszwajka/DEV/priv/garmin-coach/collector/run.sh >> /tmp/garmin-coach.log 2>&1
+0 21 * * *  /path/to/garmin-coach/collector/run.sh >> /tmp/garmin-coach.log 2>&1
 ```
 
 ## Design notes

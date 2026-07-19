@@ -1,6 +1,7 @@
 # Secrets — never commit
 .env
 .env.*
+!.env.example
 
 
 # Collected personal health data — never commit
