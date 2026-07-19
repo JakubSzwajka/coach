@@ -1,0 +1,96 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  line-height: 1.4;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand { font-weight: 700; letter-spacing: 0.3px; }
+#nav { display: flex; gap: 6px; }
+#nav a {
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+#nav a:hover { color: var(--text); background: var(--surface-2); }
+#nav a.active { color: var(--text); background: var(--surface-2); }
+#app { padding: 24px; max-width: 1100px; margin: 0 auto; }
+.loading { color: var(--text-dim); padding: 40px; text-align: center; }
+
+/* athlete header */
+.athlete {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px 32px;
+  align-items: baseline;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: var(--gap);
+}
+.athlete h1 { font-size: 20px; margin: 0; }
+.athlete .facts { display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--text-dim); font-size: 13px; }
+.athlete .facts b { color: var(--text); font-weight: 600; }
+
+/* metric cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--gap); }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.card .label { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+.card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+.card .unit { font-size: 14px; color: var(--text-dim); font-weight: 400; margin-left: 4px; }
+.card .sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+
+.section-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin: 24px 0 12px; }
+
+/* charts grid */
+.charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--gap); }
+.chart-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px 8px;
+}
+.chart-box h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.chart-box canvas { width: 100% !important; height: 200px !important; }
+
+/* range toggle */
+.range { display: inline-flex; gap: 4px; margin-bottom: 12px; }
+.range button {
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.range button.active { color: var(--text); border-color: var(--accent); }
+
+/* table */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+th { color: var(--text-dim); font-weight: 600; cursor: pointer; user-select: none; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
+th:hover { color: var(--text); }
+tbody tr:hover { background: var(--surface); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-dim); }

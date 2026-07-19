@@ -1,0 +1,15 @@
+# Secrets — never commit
+.env
+.env.*
+
+
+# Collected personal health data — never commit
+data/
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Garmin token cache lives in ~/.garminconnect (outside repo), but if copied here:
+.garminconnect/
+garmin_tokens.json
