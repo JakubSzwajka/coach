@@ -1,0 +1,3 @@
+[mcp_servers.garmin_coach_stdio_proof]
+command = "uv"
+args = ["run", "spikes/mcp_stdio_proof.py"]
