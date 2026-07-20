@@ -1,0 +1,7 @@
+# Unify completed training through a stable session core
+
+Garmin Coach represents every completed bout of training as a Training Session with a small source-independent core: immutable identity and provenance, local-date-aware timing with explicit precision, Sport and optional Session Type, source-qualified duration and distance, optional athlete-reported Session RPE, method-tagged Session Loads, notes, and a reference to preserved source detail. Garmin-derived sessions and manual App Records share this view, but they keep distinct ownership: Garmin values remain read-only and missing values remain unknown; manual sessions use the App Record revision lifecycle.
+
+This stable-core-plus-source-detail shape avoids both source-specific models that a coach cannot query coherently and a lowest-common-denominator model that discards Garmin, bouldering, or strength detail. Provider metrics are never translated into Session RPE, loads with different methods are not compared, and the MVP does not calculate a synthetic cross-sport load score.
+
+App-owned Session Annotations may add notes or flag a Garmin session as unreliable or duplicated for coaching context, but they do not replace or correct Garmin fields. Duplicate detection is never automatic: provider identity makes collected imports idempotent, while App Records remain distinct unless the athlete explicitly links or removes one.

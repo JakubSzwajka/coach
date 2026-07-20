@@ -1,0 +1,7 @@
+# Preserve training plans as immutable revisions
+
+Garmin Coach stores each Training Plan as a revisioned App Record whose immutable, server-stamped snapshots retain the plan lifecycle, Goal Event identity-and-revision references, stable Planned Session prescriptions, fulfilment state, adjustment reason, and effective date. Mutations require the expected current revision, one plan may be active at a time, and activation plus that uniqueness check is atomic; historical references continue to block deletion of their Goal Events or manual Training Sessions.
+
+A prescription adjustment may change only Planned Sessions on or after a monotonically advancing effective date that is not earlier than the revision's recorded calendar date. Earlier prescriptions remain frozen forever, while separately classified, reasoned fulfilment and match corrections may still link, unlink, or reassign completed Training Sessions without changing what was prescribed.
+
+Whole snapshots were chosen over in-place replacement, a mutable schedule plus ad hoc notes, or a replayed event log. They preserve an explainable audit trail and self-contained file-backed reads without event-sourcing machinery; stable Planned Session identity and explicit cancellation prevent removed or rewritten future work from disappearing from that history.

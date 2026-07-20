@@ -1,0 +1,5 @@
+# Keep goal events mutable and plans revision-aware
+
+Garmin Coach represents each Goal Event as a revisioned App Record with a generated identity, required name, event-local date, Sport, explicit `primary`, `secondary`, or `practice` planning priority, and lifecycle status. Exact start time, IANA time zone, distance, goal, and outcome remain optional and unknown when not supplied; a target duration is an explicitly recorded goal rather than a prediction, no time, result, or lifecycle transition is inferred, and an outcome never creates a Training Session.
+
+A Training Plan references the Goal Event identity and the revision it used. Changing the event after planning begins keeps the identity but makes that plan reference stale for explicit review instead of freezing the event, silently rewriting the plan, or automatically replanning; a referenced event cannot be deleted until plans detach from it, while cancellation remains a revisioned event change. This keeps real schedule and priority changes possible without requiring multi-record transactions or premature race-management machinery.
