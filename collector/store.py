@@ -14,11 +14,13 @@ Layout (all under ``data/``)::
       activities/<activity_id>.json
       timeline.jsonl                                 # append-only daily rollups
     index/state.json                                 # cursors + what we've pulled
+    index/collector-health.json                  # stable collection outcomes/freshness
     logs/collector-<YYYY-MM-DD>.log
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import os
 import tempfile
@@ -27,12 +29,13 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / "data"
+DATA = Path(os.environ.get("GARMIN_COACH_DATA_DIR", ROOT / "data"))
 RAW = DATA / "raw"
 DERIVED = DATA / "derived"
 INDEX = DATA / "index"
 LOGS = DATA / "logs"
 STATE_FILE = INDEX / "state.json"
+HEALTH_FILE = INDEX / "collector-health.json"
 
 
 def _parts(d: date) -> tuple[str, str, str]:
@@ -49,6 +52,19 @@ def raw_activity(activity_id: int | str, name: str, d: date | None = None) -> Pa
         y, m, _ = _parts(d)
         return RAW / "activities" / y / m / str(activity_id) / f"{name}.json"
     return RAW / "activities" / "_" / str(activity_id) / f"{name}.json"
+
+def iter_raw_activity_summaries_missing(name: str) -> Iterator[dict]:
+    """Yield stored list summaries whose sibling payload is missing."""
+    activity_root = RAW / "activities"
+    if not activity_root.exists():
+        return
+
+    for path in activity_root.rglob("list_summary.json"):
+        if path.with_name(f"{name}.json").exists():
+            continue
+        summary = read_json(path)
+        if isinstance(summary, dict):
+            yield summary
 
 
 def raw_snapshot(kind: str, d: date, name: str) -> Path:

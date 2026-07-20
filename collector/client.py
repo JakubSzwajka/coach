@@ -30,15 +30,23 @@ def load_env(path: Path | None = None) -> None:
         os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
 
 
-def connect(max_retries: int = 4) -> Garmin:
+def connect(
+    max_retries: int = 4,
+    *,
+    email: str | None = None,
+    password: str | None = None,
+    tokenstore: str | None = None,
+) -> Garmin:
     """Return a logged-in client, preferring cached tokens.
 
     Retries credential login with exponential backoff when Garmin rate-limits
     (429). Raises the last exception if every attempt fails.
     """
-    load_env()
-    email = os.getenv("GARMIN_EMAIL")
-    password = os.getenv("GARMIN_PASSWORD")
+    if email is None or password is None:
+        load_env()
+        email = email if email is not None else os.getenv("GARMIN_EMAIL")
+        password = password if password is not None else os.getenv("GARMIN_PASSWORD")
+    store = tokenstore if tokenstore is not None else TOKENSTORE
 
     last_exc: Exception | None = None
     for attempt in range(max_retries):
@@ -48,7 +56,7 @@ def connect(max_retries: int = 4) -> Garmin:
                 password,
                 prompt_mfa=lambda: input("MFA code: ").strip(),
             )
-            g.login(TOKENSTORE)  # cache first, else credentials; persists tokens
+            g.login(store)  # cache first, else credentials; persists tokens
             return g
         except Exception as exc:  # noqa: BLE001 - decide on message
             last_exc = exc

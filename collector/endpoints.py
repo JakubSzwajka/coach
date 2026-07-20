@@ -43,14 +43,11 @@ SNAPSHOT: dict[str, Callable] = {
     "race_predictions": lambda g: g.get_race_predictions(),
 }
 
-# name -> fn(client) -> data  (training calendar; pulled daily)
+# name -> fn(client, collection_date) -> data  (training calendar; pulled daily)
 PLANS: dict[str, Callable] = {
-    "scheduled_workouts": lambda g: g.get_scheduled_workouts(
-        __import__("datetime").date.today().year,
-        __import__("datetime").date.today().month,
-    ),
-    "workouts": lambda g: g.get_workouts(),
-    "training_plans": lambda g: g.get_training_plans(),
+    "scheduled_workouts": lambda g, d: g.get_scheduled_workouts(d.year, d.month),
+    "workouts": lambda g, d: g.get_workouts(),
+    "training_plans": lambda g, d: g.get_training_plans(),
 }
 
 # Per-activity detail endpoints, keyed by name -> fn(client, activity_id)
