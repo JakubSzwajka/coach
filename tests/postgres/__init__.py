@@ -1,0 +1,1 @@
+"""Disposable PostgreSQL integration tests."""

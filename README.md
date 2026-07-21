@@ -42,6 +42,31 @@ Garmin Connect ──▶ collector ──▶ data/raw/      (parsed endpoint sna
 M1 switches all producers and consumers together; it does not dual-write. The
 private-data cutover remains separately owner-gated.
 
+### PostgreSQL foundation harness
+
+The M1 runtime/migration harness is available before consumer cutover. After
+copying `.env.example` to `.env`, replace the PostgreSQL password placeholders,
+then run:
+
+```bash
+docker compose -f compose.postgres.yml up -d --wait
+.venv/bin/python -m coach.postgres.migrate upgrade
+```
+
+`GARMIN_COACH_DATABASE_URL` is required by the migration command; it never
+falls back to files. Run `scripts/test-postgres` for the non-skipping synthetic
+integration gate. That script owns a pinned, loopback-only, tmpfs PostgreSQL
+container, runs under a scrubbed environment, verifies a per-run database
+marker, and fails if cleanup fails. The normal Python suite remains
+database-free.
+
+`POSTGRES_PASSWORD` initializes a new empty Compose volume; changing `.env`
+does not rotate the role password in an existing volume. Rotate it from an
+authenticated operator session with PostgreSQL `ALTER ROLE`. For disposable,
+empty setup only, `docker compose -f compose.postgres.yml down --volumes`
+reinitializes the database destructively. Never remove a populated volume as a
+password-rotation shortcut.
+
 ## Requirements
 
 - Python 3.10+

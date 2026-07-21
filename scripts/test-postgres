@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly POSTGRES_IMAGE='postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193'
+readonly RUN_ID="$(printf '%x%x' "$PPID" "$RANDOM")"
+readonly DATABASE="coach_test_${RUN_ID}"
+readonly PASSWORD="coach_test_${RUN_ID}_${RANDOM}"
+readonly CONTAINER="garmin-coach-postgres-test-${RUN_ID}"
+readonly TEST_HOME="$(mktemp -d)"
+CONTAINER_ID=""
+
+cleanup() {
+  local original_status=$?
+  local cleanup_status=0
+  trap - EXIT INT TERM
+
+  if [[ -n "$CONTAINER_ID" ]] && ! docker rm --force "$CONTAINER_ID" >/dev/null; then
+    echo 'failed to remove disposable PostgreSQL container' >&2
+    cleanup_status=1
+  fi
+  if ! rm -rf "$TEST_HOME"; then
+    echo 'failed to remove disposable PostgreSQL test home' >&2
+    cleanup_status=1
+  fi
+
+  if (( original_status != 0 )); then
+    exit "$original_status"
+  fi
+  exit "$cleanup_status"
+}
+trap cleanup EXIT INT TERM
+
+unset GARMIN_COACH_DATABASE_URL
+
+CONTAINER_ID=$(docker run --detach --rm \
+  --name "$CONTAINER" \
+  --tmpfs /var/lib/postgresql/data:rw,noexec,nosuid \
+  --env POSTGRES_USER=coach_test \
+  --env "POSTGRES_PASSWORD=${PASSWORD}" \
+  --env "POSTGRES_DB=${DATABASE}" \
+  --publish 127.0.0.1::5432 \
+  "$POSTGRES_IMAGE")
+readonly CONTAINER_ID
+
+for _ in $(seq 1 60); do
+  if docker exec "$CONTAINER_ID" pg_isready --quiet \
+    --username coach_test --dbname "$DATABASE"; then
+    break
+  fi
+  sleep 1
+  docker_running=$(
+    docker inspect --format '{{.State.Running}}' "$CONTAINER_ID" 2>/dev/null || true
+  )
+  if [[ "$docker_running" != "true" ]]; then
+    echo 'disposable PostgreSQL exited before becoming ready' >&2
+    exit 1
+  fi
+done
+
+docker exec "$CONTAINER_ID" pg_isready --quiet \
+  --username coach_test --dbname "$DATABASE" || {
+  echo 'disposable PostgreSQL did not become ready' >&2
+  exit 1
+}
+
+host_port=$(docker port "$CONTAINER_ID" 5432/tcp | awk -F: 'NR == 1 {print $NF}')
+if [[ ! "$host_port" =~ ^[0-9]+$ ]]; then
+  echo 'could not resolve disposable PostgreSQL port' >&2
+  exit 1
+fi
+
+docker exec --env "PGPASSWORD=${PASSWORD}" "$CONTAINER_ID" \
+  psql --host 127.0.0.1 --username coach_test --dbname "$DATABASE" \
+  --no-psqlrc --set ON_ERROR_STOP=1 \
+  --command 'CREATE TABLE garmin_coach_test_harness (run_id text PRIMARY KEY)' \
+  --command "INSERT INTO garmin_coach_test_harness (run_id) VALUES ('${RUN_ID}')" \
+  >/dev/null
+
+readonly TEST_DATABASE_URL="postgresql://coach_test:${PASSWORD}@127.0.0.1:${host_port}/${DATABASE}"
+env -i \
+  PATH="$PATH" \
+  HOME="$TEST_HOME" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  PYTHONPATH="$PWD" \
+  PYTHONDONTWRITEBYTECODE=1 \
+  GARMIN_COACH_DISABLE_DOTENV=1 \
+  GARMIN_COACH_TEST_DATABASE_URL="$TEST_DATABASE_URL" \
+  GARMIN_COACH_TEST_DATABASE_NAME="$DATABASE" \
+  GARMIN_COACH_TEST_DATABASE_PASSWORD="$PASSWORD" \
+  GARMIN_COACH_TEST_DATABASE_PORT="$host_port" \
+  GARMIN_COACH_TEST_RUN_ID="$RUN_ID" \
+  .venv/bin/python -m unittest \
+    tests.postgres.postgres_test_runtime \
+    --verbose

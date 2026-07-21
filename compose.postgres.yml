@@ -1,0 +1,24 @@
+name: garmin-coach-postgres
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: ${GARMIN_COACH_POSTGRES_DB:-coach}
+      POSTGRES_USER: ${GARMIN_COACH_POSTGRES_USER:-coach}
+      POSTGRES_PASSWORD: ${GARMIN_COACH_POSTGRES_PASSWORD:?set GARMIN_COACH_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${GARMIN_COACH_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - PGPASSWORD="$${POSTGRES_PASSWORD}" psql --host 127.0.0.1 --username "$${POSTGRES_USER}" --dbname "$${POSTGRES_DB}" --no-psqlrc --command 'SELECT 1' >/dev/null
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
