@@ -1,6 +1,10 @@
 # Anthropic Claude MCP deployment assessment
 
-> Reviewed against first-party Anthropic and Model Context Protocol documentation on 2026-07-19.
+> Historical deployment assessment reviewed on 2026-07-19. Statements labelled
+> “current” describe that checkpoint, not the repository's present runtime or
+> approved storage target. Use `README.md` for current operation and
+> [`ADR-0004`](../../adr/0004-postgresql-durable-runtime-authority.md) for the
+> accepted PostgreSQL architecture.
 
 ## Executive conclusion
 

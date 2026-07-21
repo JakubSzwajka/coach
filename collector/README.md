@@ -1,10 +1,18 @@
 # Garmin collector
 
-Pulls Garmin Connect data into a two-layer store on a daily/on-demand basis.
+Pulls Garmin Connect data on a daily/on-demand basis.
 
-## Layers
+> **Pre-cutover implementation:** this document describes the current file
+> runtime. M1 moves source captures, canonical records, projections, and
+> operational state to PostgreSQL through `CoachApplication.ingest`; files will
+> not remain a second authority or receive dual-writes. See
+> [`ADR-0004`](../docs/adr/0004-postgresql-durable-runtime-authority.md).
 
-- **`data/raw/`** — exactly what Garmin returned. Immutable, reprocessable, the source of truth.
+## Current file layers
+
+- **`data/raw/`** — parsed endpoint snapshots returned by `garminconnect`.
+  Repeated pulls may replace the same endpoint/date path, so existing files do
+  not prove append-only history or original HTTP-byte fidelity.
 - **`data/derived/`** — regenerable, compact, coach-friendly training records.
 - **`data/index/state.json`** — cursors: seen activity ids, last snapshot, last run.
 - **`data/index/collector-health.json`** — machine-readable outcomes and freshness.
@@ -110,14 +118,16 @@ evening activities:
   preserved list summary even after leaving the bounded latest-activities page;
   it and any missing required profile anchor leave their cursor unchanged so
   the next run retries only missing files.
-- Derived files are disposable — delete `data/derived/` and re-run to rebuild
-  from `data/raw/` (add a `--rebuild` reprocessor later if wanted).
+- Derived files are disposable in the pre-cutover runtime and can be rebuilt
+  from the source snapshots still present. The importer must not invent source
+  history that those paths have already overwritten.
 - Uses only `garminconnect` + `curl_cffi`; `.env` loading and JSON store are
   dependency-free.
 
-## Coach skill (next)
+## Current pre-cutover coach input
 
-Point the coach at `data/derived/`:
+The file-backed coach reads `data/derived/` today. The target coach consumes
+stable `CoachApplication.read` projections instead:
 - `athlete.json` — who they are, thresholds, when they can train.
 - `timeline.jsonl` — scan trends (readiness, HRV, sleep, load) fast.
 - `daily/<date>.json` — a specific day in detail.

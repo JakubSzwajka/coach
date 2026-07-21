@@ -1,9 +1,9 @@
 # coach
 
-A personal running/fitness **data platform** over your own Garmin data:
-collect once, use everywhere. A local collector pulls your Garmin Connect data
-into a clean two-layer store; a Next.js web app visualises it; and (in stages)
-an AI coach reasons over it.
+A personal running/fitness **data platform** over your own collected and
+app-authored training data: collect once, use everywhere. A collector imports
+Garmin Connect read-only; a Next.js web app and MCP adapters consume the record;
+and (in stages) an AI coach reasons over it.
 
 See [`VISION.md`](VISION.md) for the north star, staged ambition, and guardrails.
 
@@ -11,15 +11,36 @@ See [`VISION.md`](VISION.md) for the north star, staged ambition, and guardrails
 > to your account), and any coaching output is training guidance, **not medical
 > advice**.
 
-## How it fits together
+## Architecture direction
+
+M1 makes PostgreSQL the sole durable runtime authority behind one deep Python
+`CoachApplication`:
 
 ```
-Garmin Connect ──▶ collector ──▶ data/raw/      (immutable, exactly as returned)
+Garmin Connect ──▶ collector ──▶ CoachApplication.ingest ──▶ PostgreSQL
+MCP ───────────────────────────▶ CoachApplication.read/execute ──┘
+Next.js ──▶ private authenticated HTTP adapter ──────────────────┘
+```
+
+PostgreSQL owns Profiles, operational collection state, immutable parsed source
+captures, canonical and App Records, and projections. MCP is an in-process
+adapter; Next.js does not query raw tables or duplicate authoritative Python
+validation. Files are migration, export, backup, frozen rollback, or temporary
+secret-hydration material—not a second runtime authority. See
+[`ADR-0004`](docs/adr/0004-postgresql-durable-runtime-authority.md).
+
+The commands below describe the **current pre-cutover file-backed baseline**:
+
+```
+Garmin Connect ──▶ collector ──▶ data/raw/      (parsed endpoint snapshots)
                                  data/derived/  (compact, coach-friendly)
                                        │
                                        ├──▶ web/   (Next.js dashboard, trends, activities)
-                                       └──▶ coach  (read-only context over stdio MCP)
+                                       └──▶ coach  (MCP context and App Records)
 ```
+
+M1 switches all producers and consumers together; it does not dual-write. The
+private-data cutover remains separately owner-gated.
 
 ## Requirements
 

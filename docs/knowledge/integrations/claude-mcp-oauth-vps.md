@@ -1,6 +1,13 @@
 # Claude MCP OAuth on one VPS
 
-> Decision report for TASK-203. Reviewed 2026-07-20 against first-party Anthropic/Claude, MCP specification, official MCP Python SDK `mcp` v1.28.1 source, and first-party WorkOS/Auth0 documentation. Placeholders such as `mcp.example.com` and `<authkit-domain>` are deliberate; this file contains no secrets or personal identifiers.
+> Historical decision report for TASK-203, reviewed 2026-07-20. It captures
+> options considered before the current Clerk/Profile implementation; its
+> “current” and recommended-runtime statements are not operating instructions.
+> Use `README.md` for current operation and
+> [`ADR-0004`](../../adr/0004-postgresql-durable-runtime-authority.md) for the
+> accepted PostgreSQL architecture. Placeholders such as `mcp.example.com` and
+> `<authkit-domain>` are deliberate; this file contains no secrets or personal
+> identifiers.
 
 ## Decision in one page
 
