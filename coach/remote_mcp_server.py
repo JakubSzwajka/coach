@@ -1,4 +1,4 @@
-"""Clerk-protected remote MCP server exposing read-only coaching records."""
+"""Clerk-protected remote MCP server scoped to one Profile per Clerk subject."""
 
 from __future__ import annotations
 
@@ -421,7 +421,7 @@ def _audited_tool(tool: Callable[..., Any], issuer_url: str) -> Callable[..., An
 def create_remote_server(
     config: RemoteMcpConfig, *, token_verifier: TokenVerifier | None = None
 ) -> FastMCP:
-    """Build the authenticated read-only MCP registry."""
+    """Build the authenticated, profile-scoped MCP registry."""
     config.validate()
     verifier = token_verifier or ClerkApiTokenVerifier(config)
     server = RemoteFastMCP(config, verifier)

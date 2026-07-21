@@ -42,7 +42,7 @@ _REMOTE_TOOLS = {
 
 
 class RemoteMcpProcessTest(unittest.IsolatedAsyncioTestCase):
-    async def test_authenticated_allowed_user_discovers_only_read_tools(self) -> None:
+    async def test_authenticated_user_discovers_profile_scoped_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             profile = ProfileRegistry(root).bind("user_owner")

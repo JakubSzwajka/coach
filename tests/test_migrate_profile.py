@@ -92,6 +92,23 @@ class MigrateProfileTest(unittest.TestCase):
         self.assertIsNone(ProfileRegistry(base).resolve("user_owner"))
         self.assertFalse((base / "profiles").exists())
 
+    def test_split_source_and_target_are_rejected_without_moving(self) -> None:
+        base = self._base()
+        registry = ProfileRegistry(base)
+        profile = registry.bind("user_owner")
+        target = registry.data_root(profile.id) / "derived"
+        target.mkdir(parents=True)
+        (target / "existing.json").write_text("{}", encoding="utf-8")
+        self._seed_flat(base)
+
+        code = main(["--owner-subject", "user_owner", "--base", str(base)])
+
+        self.assertEqual(code, 2)
+        self.assertTrue((base / "derived" / "athlete.json").exists())
+        self.assertTrue((base / "raw" / "x").exists())
+        self.assertTrue((target / "existing.json").exists())
+        self.assertFalse((registry.data_root(profile.id) / "raw").exists())
+
     def test_only_known_entries_are_moved(self) -> None:
         base = self._base()
         self._seed_flat(base)

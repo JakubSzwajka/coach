@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from coach.profiles import (
@@ -101,6 +102,18 @@ class ProfileRegistryTest(unittest.TestCase):
         reopened = ProfileRegistry(base)
         self.assertEqual(reopened.resolve("user_a"), bound.id)
         self.assertEqual(reopened.get(bound.id).display_name, "A")
+
+    def test_concurrent_bindings_do_not_lose_profiles(self) -> None:
+        registry, _ = self._registry()
+        subjects = [f"user_{index}" for index in range(24)]
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            profiles = list(executor.map(registry.bind, subjects))
+
+        self.assertEqual(len({profile.id for profile in profiles}), len(subjects))
+        self.assertEqual(
+            {profile.clerk_subject for profile in registry.list()}, set(subjects)
+        )
 
     def test_corrupt_registry_is_reported(self) -> None:
         registry, base = self._registry()

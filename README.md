@@ -2,7 +2,7 @@
 
 A personal running/fitness **data platform** over your own Garmin data:
 collect once, use everywhere. A local collector pulls your Garmin Connect data
-into a clean two-layer store; a buildless web app visualises it; and (in stages)
+into a clean two-layer store; a Next.js web app visualises it; and (in stages)
 an AI coach reasons over it.
 
 See [`VISION.md`](VISION.md) for the north star, staged ambition, and guardrails.
@@ -17,7 +17,7 @@ See [`VISION.md`](VISION.md) for the north star, staged ambition, and guardrails
 Garmin Connect ──▶ collector ──▶ data/raw/      (immutable, exactly as returned)
                                  data/derived/  (compact, coach-friendly)
                                        │
-                                       ├──▶ viz/   (dashboard, trends, activities)
+                                       ├──▶ web/   (Next.js dashboard, trends, activities)
                                        └──▶ coach  (read-only context over stdio MCP)
 ```
 
@@ -116,11 +116,12 @@ so do not proxy it, bind it to a LAN interface, or expose it publicly.
 
 ### Clerk-protected remote HTTP transport
 
-The public-facing server is a separate process and registry. It accepts only
-Clerk OAuth bearers belonging to explicitly allowed users and exposes eight
-read tools; the twelve App Record mutation tools remain absent. Every allowed
-user reads the same single athlete profile. The server is fixed to loopback, so
-a production deployment must put an HTTPS reverse proxy in front.
+The public-facing server is a separate process protected by Clerk OAuth. Every
+verified Clerk subject is resolved to one isolated Profile and receives the
+same 20 read/App Record tools as the local MCP surface; no caller can select a
+profile id. Restrict who may join or sign in through the Clerk application
+configuration. The server is fixed to loopback, so a production deployment must
+put an HTTPS reverse proxy in front.
 
 Copy the example configuration once, then fill in the Clerk values. The server
 loads `.env` automatically and explicit process environment variables take
@@ -136,7 +137,6 @@ Required remote-server entries:
 GARMIN_COACH_DATA_DIR=data
 GARMIN_COACH_MCP_PUBLIC_URL=https://mcp.example.com/mcp
 GARMIN_COACH_CLERK_ISSUER=https://example.clerk.accounts.dev
-GARMIN_COACH_CLERK_ALLOWED_SUBJECTS=user_example,user_invited
 GARMIN_COACH_CLERK_SECRET_KEY=sk_test_example
 ```
 
@@ -146,12 +146,11 @@ Then start the protected server:
 .venv/bin/python -m coach.remote_mcp_server --port 8765
 ```
 
-Keep `.env` local; it is gitignored. `GARMIN_COACH_CLERK_ALLOWED_SUBJECTS` is a
-comma-separated allowlist of Clerk User IDs. OAuth clients register through
-Clerk DCR, so users do not configure a client ID manually. The server publishes
-RFC 9728 protected-resource metadata, validates token status through Clerk's
-Backend API, and records only redacted tool audit events. Local development may
-use loopback HTTP; non-loopback resource and issuer URLs must use HTTPS.
+Keep `.env` local; it is gitignored. OAuth clients register through Clerk DCR,
+so users do not configure a client ID manually. The server publishes RFC 9728
+protected-resource metadata, validates token status through Clerk's Backend
+API, and records only redacted tool audit events. Local development may use
+loopback HTTP; non-loopback resource and issuer URLs must use HTTPS.
 
 The tool accepts `days` from 1 through 90 (default 14) and an optional ISO
 `end_date`. Collection health is reported from
@@ -203,21 +202,44 @@ past or archived history. `get_training_plan_history` returns every revision
 oldest-first. Matching is explicit; nothing is auto-matched, completed
 Training Sessions stay read-only, and Garmin is never written.
 
-## View the dashboard
+## Web dashboard
+
+A Next.js app under [`web/`](web/) presents the store — dashboard, trends, and
+activities — reading `data/derived/` **server-side**, so the browser never sees
+the raw files. Local development:
 
 ```bash
-python -m http.server 8000    # from the repo root
-# open http://localhost:8000/viz/
+cd web
+pnpm install
+cp .env.example .env          # then add your Clerk keys
+GARMIN_COACH_DATA_DIR=../data pnpm dev   # http://localhost:3000
 ```
 
-See [`viz/README.md`](viz/README.md) for the views and the `data.js` seam.
+Or run it containerised from the repo root (mounts `data/` read-write so the
+collector can update the signed-in profile):
+
+```bash
+docker compose up --build          # http://localhost:3000
+```
+
+Access requires a signed-in Clerk user — mandatory auth via Next proxy, using
+the same Clerk application as the MCP server. Keys load from `web/.env`
+(`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`). The header can bind
+the current Clerk user to Garmin credentials, run an initial background
+backfill, and trigger later incremental refreshes; credentials are encrypted
+before storage and never enter browser storage. Set `GARMIN_COACH_SECRET_KEY`
+from secret injection to keep key material outside the data volume. Legacy flat
+data is never assigned by first-login order. Garmin MFA must be disabled in this
+pre-cutover implementation. Data is read at request time, so a reload reflects
+the latest successful collector run. See
+[`web/README.md`](web/README.md) for profile resolution and job details.
 
 ## Layout
 
 ```
 collector/   Python package: idempotent Garmin pull → raw + derived store
 coach/       CoachData adapter (read context + app-owned sessions & goal events) + stdio MCP
-viz/         buildless vanilla-JS app over data/derived/
+web/         Next.js dashboard (server-reads data/derived/) + Dockerfile
 data/        collected + app data (gitignored: raw/, derived/, index/, logs/, app/)
 docs/        knowledge/, agents/ (agent config), adr/ (as decisions land)
 spikes/      throwaway experiments (auth smoke test)

@@ -11,11 +11,45 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
 from .profiles import ProfileRegistry
 
-_MIGRATABLE = ("raw", "derived", "index", "logs", "app", "garmin-tokens")
+MIGRATABLE = ("raw", "derived", "index", "logs", "app", "garmin-tokens")
+
+
+class MigrationConflict(RuntimeError):
+    """Both the legacy source and profile target exist for one collection."""
+
+
+def migrate_flat_data(base: Path, profile_root: Path) -> list[tuple[Path, Path]]:
+    """Move legacy flat-store directories into one profile root.
+
+    Repeating a completed migration is safe. A split source/target collection
+    is rejected for explicit reconciliation instead of being silently skipped.
+    The caller decides which profile may claim flat data.
+    """
+    conflicts = [
+        name
+        for name in MIGRATABLE
+        if (base / name).exists() and (profile_root / name).exists()
+    ]
+    if conflicts:
+        raise MigrationConflict(
+            "legacy and profile collections both exist: " + ", ".join(conflicts)
+        )
+
+    moved: list[tuple[Path, Path]] = []
+    profile_root.mkdir(parents=True, exist_ok=True)
+    for name in MIGRATABLE:
+        source = base / name
+        target = profile_root / name
+        if not source.exists() or target.exists():
+            continue
+        shutil.move(str(source), str(target))
+        moved.append((source, target))
+    return moved
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     base = Path(args.base)
     registry = ProfileRegistry(base)
 
-    present = [name for name in _MIGRATABLE if (base / name).exists()]
+    present = [name for name in MIGRATABLE if (base / name).exists()]
 
     if args.dry_run:
         existing_id = registry.resolve(args.owner_subject)
@@ -45,16 +79,18 @@ def main(argv: list[str] | None = None) -> int:
 
     profile = registry.bind(args.owner_subject, args.display_name)
     root = registry.data_root(profile.id)
-    root.mkdir(parents=True, exist_ok=True)
-
+    try:
+        moved = migrate_flat_data(base, root)
+    except MigrationConflict as exc:
+        print(f"migration conflict: {exc}", file=sys.stderr)
+        return 2
+    moved_names = {source.name for source, _ in moved}
     for name in present:
-        src = base / name
         target = root / name
-        if target.exists():
+        if name in moved_names:
+            print(f"moved {base / name} -> {target}")
+        else:
             print(f"already migrated: {target} — skipping")
-            continue
-        shutil.move(str(src), str(target))
-        print(f"moved {src} -> {target}")
 
     print(f"profile id: {profile.id}")
     print(f"Local server: set GARMIN_COACH_DATA_DIR={root}")

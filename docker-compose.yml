@@ -1,0 +1,17 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "3000:3000"
+    # Clerk keys (and any overrides) come from web/.env; copy web/.env.example.
+    env_file:
+      - path: ./web/.env
+        required: false
+    environment:
+      GARMIN_COACH_DATA_DIR: /data
+    # The combined Node+Python process reads and updates the per-profile store.
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

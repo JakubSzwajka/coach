@@ -9,11 +9,13 @@ until the migration lands.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import secrets
 import shutil
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,33 +90,51 @@ class ProfileRegistry:
         """
         if not clerk_subject or not isinstance(clerk_subject, str):
             raise ProfileError("clerk_subject is required")
-        rows = self._load()
-        for pid, row in rows.items():
-            if row.get("clerk_subject") == clerk_subject:
-                if display_name and not row.get("display_name"):
-                    row["display_name"] = display_name
-                    self._save(rows)
-                return self._to_profile(pid, row)
+        with self._exclusive_write():
+            rows = self._load()
+            for pid, row in rows.items():
+                if row.get("clerk_subject") == clerk_subject:
+                    if display_name and not row.get("display_name"):
+                        row["display_name"] = display_name
+                        self._save(rows)
+                    return self._to_profile(pid, row)
 
-        profile_id = secrets.token_hex(16)
-        next_seq = 1 + max((row.get("seq", 0) for row in rows.values()), default=0)
-        rows[profile_id] = {
-            "clerk_subject": clerk_subject,
-            "display_name": display_name,
-            "created_at": _utc_now(),
-            "seq": next_seq,
-        }
-        self._save(rows)
-        return self._to_profile(profile_id, rows[profile_id])
+            profile_id = secrets.token_hex(16)
+            next_seq = 1 + max(
+                (row.get("seq", 0) for row in rows.values()), default=0
+            )
+            rows[profile_id] = {
+                "clerk_subject": clerk_subject,
+                "display_name": display_name,
+                "created_at": _utc_now(),
+                "seq": next_seq,
+            }
+            self._save(rows)
+            return self._to_profile(profile_id, rows[profile_id])
 
     def delete(self, profile_id: str) -> None:
         """Purge a profile: remove its data root and its registry row."""
-        rows = self._load()
-        if profile_id not in rows:
-            raise ProfileNotFound(f"profile {profile_id} does not exist")
-        shutil.rmtree(self.data_root(profile_id), ignore_errors=True)
-        del rows[profile_id]
-        self._save(rows)
+        with self._exclusive_write():
+            rows = self._load()
+            if profile_id not in rows:
+                raise ProfileNotFound(f"profile {profile_id} does not exist")
+            shutil.rmtree(self.data_root(profile_id), ignore_errors=True)
+            del rows[profile_id]
+            self._save(rows)
+
+    @contextmanager
+    def _exclusive_write(self):
+        """Serialize registry read-modify-write cycles across local processes."""
+        self._profiles_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = self._profiles_dir / "registry.lock"
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            with os.fdopen(descriptor, "a+") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                yield
+        finally:
+            # Closing the descriptor releases the advisory lock.
+            pass
 
     def _load(self) -> dict[str, dict]:
         try:
