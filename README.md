@@ -53,19 +53,21 @@ docker compose -f compose.postgres.yml up -d --wait
 .venv/bin/python -m coach.postgres.migrate upgrade
 ```
 
-`GARMIN_COACH_DATABASE_URL` is required by the migration command; it never
-falls back to files. Run `scripts/test-postgres` for the non-skipping synthetic
-integration gate. That script owns a pinned, loopback-only, tmpfs PostgreSQL
-container, runs under a scrubbed environment, verifies a per-run database
+`GARMIN_COACH_MIGRATION_DATABASE_URL` is required by the migration command;
+`GARMIN_COACH_DATABASE_URL` is reserved for the non-superuser application role.
+Neither falls back to files. Run `scripts/test-postgres` for the non-skipping
+synthetic integration gate. That script owns a pinned, loopback-only, tmpfs
+PostgreSQL container, runs under a scrubbed environment, verifies a per-run
 marker, and fails if cleanup fails. The normal Python suite remains
 database-free.
 
-`POSTGRES_PASSWORD` initializes a new empty Compose volume; changing `.env`
-does not rotate the role password in an existing volume. Rotate it from an
-authenticated operator session with PostgreSQL `ALTER ROLE`. For disposable,
-empty setup only, `docker compose -f compose.postgres.yml down --volumes`
-reinitializes the database destructively. Never remove a populated volume as a
-password-rotation shortcut.
+The admin and application passwords initialize a new empty Compose volume;
+changing `.env` does not rotate role passwords in an existing volume. Rotate
+them from an authenticated operator session with PostgreSQL `ALTER ROLE`. For
+disposable, empty setup only,
+`docker compose -f compose.postgres.yml down --volumes` reinitializes the
+database destructively. Never remove a populated volume as a password-rotation
+shortcut.
 
 ## Requirements
 

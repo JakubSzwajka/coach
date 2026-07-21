@@ -4,15 +4,20 @@ import os
 import unittest
 from unittest.mock import patch
 
-from tests.postgres.support import UnsafeTestDatabase, test_database_url
+from tests.postgres.support import UnsafeTestDatabase, test_database
 
 
 class PostgreSQLTestGuardTest(unittest.TestCase):
     def _environment(self, url: str) -> dict[str, str]:
         return {
             "GARMIN_COACH_TEST_DATABASE_URL": url,
+            "GARMIN_COACH_TEST_MIGRATION_DATABASE_URL": (
+                "postgresql://coach_test_admin:synthetic-admin@127.0.0.1:5432/"
+                "coach_test_run123"
+            ),
             "GARMIN_COACH_TEST_DATABASE_NAME": "coach_test_run123",
             "GARMIN_COACH_TEST_DATABASE_PASSWORD": "synthetic",
+            "GARMIN_COACH_TEST_MIGRATION_DATABASE_PASSWORD": "synthetic-admin",
             "GARMIN_COACH_TEST_DATABASE_PORT": "5432",
             "GARMIN_COACH_TEST_RUN_ID": "run123",
         }
@@ -25,7 +30,7 @@ class PostgreSQLTestGuardTest(unittest.TestCase):
 
         with patch.dict(os.environ, environment, clear=True):
             with self.assertRaises(UnsafeTestDatabase):
-                test_database_url()
+                test_database()
 
     def test_database_name_must_match_the_per_run_identity(self) -> None:
         environment = self._environment(
@@ -34,7 +39,7 @@ class PostgreSQLTestGuardTest(unittest.TestCase):
 
         with patch.dict(os.environ, environment, clear=True):
             with self.assertRaises(UnsafeTestDatabase):
-                test_database_url()
+                test_database()
 
 
 if __name__ == "__main__":

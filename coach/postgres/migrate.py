@@ -36,15 +36,21 @@ def main(argv: list[str] | None = None) -> int:
     subcommands = parser.add_subparsers(dest="command", required=True)
     upgrade = subcommands.add_parser("upgrade", help="upgrade the database")
     upgrade.add_argument("revision", nargs="?", default="head")
+    downgrade = subcommands.add_parser("downgrade", help="downgrade the database")
+    downgrade.add_argument("revision", nargs="?", default="-1")
     subcommands.add_parser("current", help="show the current migration revision")
     arguments = parser.parse_args(argv)
 
     try:
         if os.environ.get("GARMIN_COACH_DISABLE_DOTENV") != "1":
             load_dotenv(_PROJECT_ROOT / ".env", override=False)
-        settings = DatabaseSettings.from_env()
+        settings = DatabaseSettings.from_env(
+            "GARMIN_COACH_MIGRATION_DATABASE_URL"
+        )
         if arguments.command == "upgrade":
             migrate(settings, arguments.revision)
+        elif arguments.command == "downgrade":
+            command.downgrade(alembic_config(settings), arguments.revision)
         else:
             command.current(alembic_config(settings), verbose=False)
     except DatabaseConfigurationError as exc:

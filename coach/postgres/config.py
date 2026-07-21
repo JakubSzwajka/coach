@@ -22,12 +22,12 @@ class DatabaseSettings:
     _url: str
 
     @classmethod
-    def from_env(cls) -> "DatabaseSettings":
-        url = os.environ.get("GARMIN_COACH_DATABASE_URL", "").strip()
+    def from_env(
+        cls, variable: str = "GARMIN_COACH_DATABASE_URL"
+    ) -> "DatabaseSettings":
+        url = os.environ.get(variable, "").strip()
         if not url:
-            raise DatabaseConfigurationError(
-                "GARMIN_COACH_DATABASE_URL is required"
-            )
+            raise DatabaseConfigurationError(f"{variable} is required")
         return cls.from_url(url)
 
     @classmethod
