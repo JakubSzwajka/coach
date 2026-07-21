@@ -103,4 +103,5 @@ env -i \
   .venv/bin/python -m unittest \
     tests.postgres.postgres_test_runtime \
     tests.postgres.postgres_test_capture_schema \
+    tests.postgres.postgres_test_application \
     --verbose

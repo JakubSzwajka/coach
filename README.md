@@ -61,6 +61,13 @@ PostgreSQL container, runs under a scrubbed environment, verifies a per-run
 marker, and fails if cleanup fails. The normal Python suite remains
 database-free.
 
+`coach/application.py` is the PostgreSQL-only application seam for actor-scoped
+reads and commands plus internal ingest. Its private Next.js HTTP adapter
+contract is documented in
+[`docs/architecture/coach-application-http-adapter.md`](docs/architecture/coach-application-http-adapter.md).
+Current MCP and web consumers remain on their labelled pre-cutover adapters
+until the downstream consumer-switch step; this foundation does not dual-write.
+
 The admin and application passwords initialize a new empty Compose volume;
 changing `.env` does not rotate role passwords in an existing volume. Rotate
 them from an authenticated operator session with PostgreSQL `ALTER ROLE`. For

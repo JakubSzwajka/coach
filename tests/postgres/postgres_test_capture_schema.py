@@ -509,6 +509,9 @@ class ProfileSourceCaptureSchemaTest(unittest.TestCase):
         with self.assertRaises(psycopg.errors.InsufficientPrivilege):
             with psycopg.connect(self.database_url) as connection:
                 connection.execute("CREATE TABLE privilege_escape (id integer)")
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+            with psycopg.connect(self.database_url) as connection:
+                connection.execute("CREATE TEMP TABLE profiles (id integer)")
 
     def test_database_rejects_cross_profile_record_relationship(self) -> None:
         first_profile, _ = self._profile_and_connection("a")

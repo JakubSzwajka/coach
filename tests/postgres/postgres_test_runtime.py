@@ -52,7 +52,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
             revision = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()
-        self.assertEqual(revision, ("0002_profile_source_captures",))
+        self.assertEqual(revision, ("0003_profile_revisions",))
 
     def test_current_command_reports_the_applied_revision(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)
@@ -60,7 +60,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
         current = self._migration("current")
 
         self.assertEqual(current.returncode, 0, current.stderr)
-        self.assertIn("0002_profile_source_captures", current.stdout)
+        self.assertIn("0003_profile_revisions", current.stdout)
 
     def test_downgrade_and_reupgrade_round_trip(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)

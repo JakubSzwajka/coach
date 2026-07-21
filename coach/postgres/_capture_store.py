@@ -26,6 +26,32 @@ class CaptureStoreError(RuntimeError):
     """A profile-scoped capture operation is invalid."""
 
 
+class _ProfileNotFound(CaptureStoreError):
+    pass
+
+
+class _StaleRevision(CaptureStoreError):
+    pass
+
+
+class _AccessDenied(CaptureStoreError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredProfile:
+    id: UUID
+    display_name: str | None
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CollectionSummary:
+    records: int
+    captures: int
+    latest_collected_at: datetime | None
+
+
 @dataclass(frozen=True, slots=True)
 class CaptureInput:
     record_kind: str
@@ -62,6 +88,7 @@ class CaptureStore:
     ) -> UUID:
         issuer = _required_text(issuer, "issuer")
         subject = _required_text(subject, "subject")
+        display_name = _optional_text(display_name, "display_name")
         try:
             with psycopg.connect(self._settings.url) as connection:
                 existing = connection.execute(
@@ -99,6 +126,109 @@ class CaptureStore:
                 if existing is None:
                     raise CaptureStoreError("profile binding failed")
                 return existing[0]
+
+    def get_profile(self, issuer: str, subject: str) -> _StoredProfile | None:
+        issuer = _required_text(issuer, "issuer")
+        subject = _required_text(subject, "subject")
+        with psycopg.connect(self._settings.url) as connection:
+            row = connection.execute(
+                """
+                SELECT id, display_name, revision
+                FROM profiles
+                WHERE clerk_issuer = %s AND clerk_subject = %s
+                """,
+                (issuer, subject),
+            ).fetchone()
+        if row is None:
+            return None
+        return _StoredProfile(row[0], row[1], row[2])
+
+    def update_profile_display_name(
+        self,
+        issuer: str,
+        subject: str,
+        display_name: str | None,
+        expected_revision: int,
+    ) -> _StoredProfile:
+        issuer = _required_text(issuer, "issuer")
+        subject = _required_text(subject, "subject")
+        display_name = _optional_text(display_name, "display_name")
+        if (
+            not isinstance(expected_revision, int)
+            or isinstance(expected_revision, bool)
+            or expected_revision < 0
+        ):
+            raise CaptureStoreError("expected_revision must be a non-negative integer")
+        with psycopg.connect(self._settings.url) as connection:
+            row = connection.execute(
+                """
+                UPDATE profiles
+                SET display_name = %s,
+                    revision = revision + 1
+                WHERE clerk_issuer = %s
+                  AND clerk_subject = %s
+                  AND revision = %s
+                RETURNING id, display_name, revision
+                """,
+                (display_name, issuer, subject, expected_revision),
+            ).fetchone()
+            if row is not None:
+                return _StoredProfile(row[0], row[1], row[2])
+            exists = connection.execute(
+                """
+                SELECT 1
+                FROM profiles
+                WHERE clerk_issuer = %s AND clerk_subject = %s
+                """,
+                (issuer, subject),
+            ).fetchone()
+            if exists is None:
+                raise _ProfileNotFound("profile is not available")
+            raise _StaleRevision("profile revision is stale")
+
+    def ensure_source_connection_for_actor(
+        self,
+        issuer: str,
+        subject: str,
+        provider: str,
+        connection_key: str,
+    ) -> tuple[UUID, UUID]:
+        profile = self.get_profile(issuer, subject)
+        if profile is None:
+            raise _ProfileNotFound("profile is not available")
+        connection_id = self.ensure_source_connection(
+            profile.id,
+            provider,
+            connection_key,
+        )
+        return profile.id, connection_id
+
+    def collection_summary(
+        self, issuer: str, subject: str
+    ) -> tuple[UUID, _CollectionSummary] | None:
+        issuer = _required_text(issuer, "issuer")
+        subject = _required_text(subject, "subject")
+        with psycopg.connect(self._settings.url) as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    p.id,
+                    count(DISTINCT r.id),
+                    count(c.id),
+                    max(c.collected_at)
+                FROM profiles AS p
+                LEFT JOIN collected_records AS r ON r.profile_id = p.id
+                LEFT JOIN collected_record_captures AS c
+                  ON c.profile_id = r.profile_id
+                 AND c.collected_record_id = r.id
+                WHERE p.clerk_issuer = %s AND p.clerk_subject = %s
+                GROUP BY p.id
+                """,
+                (issuer, subject),
+            ).fetchone()
+        if row is None:
+            return None
+        return row[0], _CollectionSummary(row[1], row[2], row[3])
 
     def ensure_source_connection(
         self,
@@ -193,7 +323,7 @@ class CaptureStore:
                 (profile_id, source_connection_id),
             ).fetchone()
             if owned_connection is None:
-                raise CaptureStoreError("source connection is not available")
+                raise _AccessDenied("source connection is not available")
 
             for capture in prepared:
                 record_id = uuid4()
@@ -290,6 +420,14 @@ def _required_text(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise CaptureStoreError(f"{field_name} is required")
     return value.strip()
+
+
+def _optional_text(value: str | None, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise CaptureStoreError(f"{field_name} must be text or null")
+    return value.strip() or None
 
 
 def _encrypted_blob(
