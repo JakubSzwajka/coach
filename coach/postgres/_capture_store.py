@@ -164,6 +164,7 @@ class _StoredLoad:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class _StoredSession:
+    id: UUID
     local_date: date
     local_start: datetime | None
     timing_precision: str
@@ -1032,6 +1033,7 @@ class CaptureStore:
                     (profile_id, session_row[0]),
                 ).fetchall()
                 session = _StoredSession(
+                    id=session_row[0],
                     local_date=session_row[1],
                     local_start=session_row[2],
                     timing_precision=session_row[3],

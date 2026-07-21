@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Protocol, Sequence, Union, overload
+from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence, Union, overload
 from uuid import UUID
 
 import psycopg
@@ -40,6 +40,15 @@ from .postgres._collection_store import (
     TransientCollectionError,
     _RunLease,
     _StoredJob,
+)
+from .postgres._app_record_store import (
+    AppRecordStore,
+    AppRecordStoreError,
+    _AppRecordConflict,
+    _AppRecordNotFound,
+    _AppRecordReadOnly,
+    _AppRecordStale,
+    _training_session_id,
 )
 from .postgres.config import DatabaseSettings
 from .postgres.encryption import EncryptedBlob
@@ -189,6 +198,7 @@ class SessionLoadView:
 
 @dataclass(frozen=True, slots=True)
 class TrainingSessionView:
+    id: str
     local_date: date = field(repr=False)
     sport: str = field(repr=False)
     timing_precision: str = field(repr=False)
@@ -305,12 +315,161 @@ class GetSourceStatus:
     domain: str = "initial_sync"
 
 
+@dataclass(frozen=True, slots=True)
+class TrainingSessionRecordView:
+    id: str
+    origin: str
+    ownership: str
+    content: Mapping[str, Any] = field(repr=False)
+    provenance: Mapping[str, Any] = field(repr=False)
+    created_at: datetime = field(repr=False)
+    updated_at: datetime = field(repr=False)
+    revision: int | None
+
+    def __repr__(self) -> str:
+        return f"TrainingSessionRecordView(id={self.id!r}, revision={self.revision}, <redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingSessionRecordsView:
+    sessions: tuple[TrainingSessionRecordView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionAnnotationView:
+    id: str
+    origin: str
+    training_session_id: str
+    notes: str | None = field(repr=False)
+    reliability: str | None = field(repr=False)
+    duplicate: bool | None = field(repr=False)
+    provenance: Mapping[str, Any] = field(repr=False)
+    created_at: datetime = field(repr=False)
+    updated_at: datetime = field(repr=False)
+    revision: int
+
+    def __repr__(self) -> str:
+        return f"SessionAnnotationView(id={self.id!r}, revision={self.revision}, <redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
+class GoalEventView:
+    id: str
+    origin: str
+    content: Mapping[str, Any] = field(repr=False)
+    provenance: Mapping[str, Any] = field(repr=False)
+    created_at: datetime = field(repr=False)
+    updated_at: datetime = field(repr=False)
+    revision: int
+
+    def __repr__(self) -> str:
+        return f"GoalEventView(id={self.id!r}, revision={self.revision}, <redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
+class GoalEventsView:
+    events: tuple[GoalEventView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingPlanView:
+    id: str
+    origin: str
+    content: Mapping[str, Any] = field(repr=False)
+    provenance: Mapping[str, Any] = field(repr=False)
+    created_at: datetime = field(repr=False)
+    updated_at: datetime = field(repr=False)
+    revision: int
+
+    def __repr__(self) -> str:
+        return f"TrainingPlanView(id={self.id!r}, revision={self.revision}, <redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingPlansView:
+    plans: tuple[TrainingPlanView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanRevisionView:
+    revision: int
+    kind: str
+    recorded_at: datetime = field(repr=False)
+    reason: str = field(repr=False)
+    effective_from: str | None = field(repr=False)
+    plan: Mapping[str, Any] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingPlanHistoryView:
+    id: str
+    revisions: tuple[PlanRevisionView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DeletedAppRecordView:
+    id: str
+    revision: int
+    deleted: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class GetTrainingSession:
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ListTrainingSessions:
+    starts_on: date
+    ends_on: date
+    sport: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GetSessionAnnotation:
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class GetGoalEvent:
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ListGoalEvents:
+    sport: str | None = None
+    status: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GetTrainingPlan:
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ListTrainingPlans:
+    status: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GetTrainingPlanHistory:
+    id: str
+
+
 Query = Union[
     GetProfile,
     GetCollectionSummary,
     GetCollectedRecord,
     GetCollectionJob,
     GetSourceStatus,
+    GetTrainingSession,
+    ListTrainingSessions,
+    GetSessionAnnotation,
+    GetGoalEvent,
+    ListGoalEvents,
+    GetTrainingPlan,
+    ListTrainingPlans,
+    GetTrainingPlanHistory,
 ]
 ReadResult = Union[
     ProfileView,
@@ -318,6 +477,14 @@ ReadResult = Union[
     CollectedRecordView,
     CollectionJobView,
     SourceStatusView,
+    TrainingSessionRecordView,
+    TrainingSessionRecordsView,
+    SessionAnnotationView,
+    GoalEventView,
+    GoalEventsView,
+    TrainingPlanView,
+    TrainingPlansView,
+    TrainingPlanHistoryView,
     None,
 ]
 
@@ -375,6 +542,121 @@ class RunCollectionJob:
     job: CollectionJobRef
 
 
+@dataclass(frozen=True, slots=True)
+class CreateTrainingSession:
+    content: Mapping[str, Any] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceTrainingSession:
+    id: str
+    expected_revision: int
+    content: Mapping[str, Any] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteTrainingSession:
+    id: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class CreateSessionAnnotation:
+    training_session_id: str
+    notes: str | None = field(default=None, repr=False)
+    reliability: str | None = field(default=None, repr=False)
+    duplicate: bool | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceSessionAnnotation:
+    id: str
+    expected_revision: int
+    notes: str | None = field(default=None, repr=False)
+    reliability: str | None = field(default=None, repr=False)
+    duplicate: bool | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteSessionAnnotation:
+    id: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class CreateGoalEvent:
+    content: Mapping[str, Any] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceGoalEvent:
+    id: str
+    expected_revision: int
+    content: Mapping[str, Any] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteGoalEvent:
+    id: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class CreateTrainingPlan:
+    name: str = field(repr=False)
+    starts_on: str = field(repr=False)
+    ends_on: str = field(repr=False)
+    reason: str = field(repr=False)
+    goal_events: Sequence[Mapping[str, Any]] | None = field(default=None, repr=False)
+    constraints: Sequence[str] | None = field(default=None, repr=False)
+    planned_sessions: Sequence[Mapping[str, Any]] | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ActivateTrainingPlan:
+    id: str
+    expected_revision: int
+    reason: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveTrainingPlan:
+    id: str
+    expected_revision: int
+    reason: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteTrainingPlan:
+    id: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class AdjustTrainingPlan:
+    id: str
+    expected_revision: int
+    reason: str = field(repr=False)
+    effective_from: str = field(repr=False)
+    operations: Sequence[Mapping[str, Any]] = field(repr=False)
+    name: str | None = field(default=None, repr=False)
+    starts_on: str | None = field(default=None, repr=False)
+    ends_on: str | None = field(default=None, repr=False)
+    goal_events: Sequence[Mapping[str, Any]] | None = field(default=None, repr=False)
+    constraints: Sequence[str] | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class SetPlannedSessionFulfilment:
+    id: str
+    expected_revision: int
+    planned_session_id: str
+    disposition: str
+    reason: str = field(repr=False)
+    matches: Sequence[str] | None = field(default=None, repr=False)
+    fulfilment_note: str | None = field(default=None, repr=False)
+
+
 Command = Union[
     EnsureProfile,
     UpdateProfileDisplayName,
@@ -382,8 +664,32 @@ Command = Union[
     ConfigureSourceCredentials,
     RequestCollection,
     RunCollectionJob,
+    CreateTrainingSession,
+    ReplaceTrainingSession,
+    DeleteTrainingSession,
+    CreateSessionAnnotation,
+    ReplaceSessionAnnotation,
+    DeleteSessionAnnotation,
+    CreateGoalEvent,
+    ReplaceGoalEvent,
+    DeleteGoalEvent,
+    CreateTrainingPlan,
+    ActivateTrainingPlan,
+    ArchiveTrainingPlan,
+    DeleteTrainingPlan,
+    AdjustTrainingPlan,
+    SetPlannedSessionFulfilment,
 ]
-ExecuteResult = Union[ProfileView, SourceConnectionRef, CollectionJobView]
+ExecuteResult = Union[
+    ProfileView,
+    SourceConnectionRef,
+    CollectionJobView,
+    TrainingSessionRecordView,
+    SessionAnnotationView,
+    GoalEventView,
+    TrainingPlanView,
+    DeletedAppRecordView,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -527,9 +833,11 @@ class CoachApplication:
         collection_adapter: _CollectionAdapter | None = None,
         encryption_key: bytes | None = None,
         temporary_root: Path | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.__store = CaptureStore(settings)
         self.__collections = CollectionStore(settings)
+        self.__app_records = AppRecordStore(settings, clock=clock)
         self.__adapter = collection_adapter
         self.__encryption_key = encryption_key
         self.__temporary_root = temporary_root
@@ -577,6 +885,7 @@ class CoachApplication:
                 if projection.session is not None:
                     stored = projection.session
                     session = TrainingSessionView(
+                        id=_training_session_id(stored.id, "collected"),
                         local_date=stored.local_date,
                         sport=stored.sport,
                         timing_precision=stored.timing_precision,
@@ -651,6 +960,54 @@ class CoachApplication:
                     last_success_at=status.last_success_at,
                     checkpoint_revision=status.checkpoint_revision,
                 )
+            if isinstance(query, GetTrainingSession):
+                record = self.__app_records.get_training_session(
+                    actor.issuer, actor.subject, query.id
+                )
+                return _training_session_record_view(record) if record else None
+            if isinstance(query, ListTrainingSessions):
+                records = self.__app_records.list_training_sessions(
+                    actor.issuer,
+                    actor.subject,
+                    query.starts_on,
+                    query.ends_on,
+                    query.sport,
+                )
+                return TrainingSessionRecordsView(
+                    tuple(_training_session_record_view(item) for item in records)
+                )
+            if isinstance(query, GetSessionAnnotation):
+                record = self.__app_records.get_session_annotation(
+                    actor.issuer, actor.subject, query.id
+                )
+                return _session_annotation_view(record) if record else None
+            if isinstance(query, GetGoalEvent):
+                record = self.__app_records.get_goal_event(
+                    actor.issuer, actor.subject, query.id
+                )
+                return _goal_event_view(record) if record else None
+            if isinstance(query, ListGoalEvents):
+                records = self.__app_records.list_goal_events(
+                    actor.issuer, actor.subject, query.sport, query.status
+                )
+                return GoalEventsView(tuple(_goal_event_view(item) for item in records))
+            if isinstance(query, GetTrainingPlan):
+                record = self.__app_records.get_training_plan(
+                    actor.issuer, actor.subject, query.id
+                )
+                return _training_plan_view(record) if record else None
+            if isinstance(query, ListTrainingPlans):
+                records = self.__app_records.list_training_plans(
+                    actor.issuer, actor.subject, query.status
+                )
+                return TrainingPlansView(
+                    tuple(_training_plan_view(item) for item in records)
+                )
+            if isinstance(query, GetTrainingPlanHistory):
+                record = self.__app_records.get_training_plan_history(
+                    actor.issuer, actor.subject, query.id
+                )
+                return _training_plan_history_view(record) if record else None
             raise InvalidRequest("unsupported application query")
 
     @overload
@@ -743,6 +1100,162 @@ class CoachApplication:
                 if not isinstance(command.job, CollectionJobRef):
                     raise InvalidRequest("a collection job capability is required")
                 return self.__run_collection_job(actor, command.job)
+            if isinstance(command, CreateTrainingSession):
+                return _training_session_record_view(
+                    self.__app_records.create_training_session(
+                        actor.issuer, actor.subject, command.content
+                    )
+                )
+            if isinstance(command, ReplaceTrainingSession):
+                return _training_session_record_view(
+                    self.__app_records.replace_training_session(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                        command.content,
+                    )
+                )
+            if isinstance(command, DeleteTrainingSession):
+                return _deleted_view(
+                    self.__app_records.delete_training_session(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                    )
+                )
+            if isinstance(command, CreateSessionAnnotation):
+                return _session_annotation_view(
+                    self.__app_records.create_session_annotation(
+                        actor.issuer,
+                        actor.subject,
+                        command.training_session_id,
+                        notes=command.notes,
+                        reliability=command.reliability,
+                        duplicate=command.duplicate,
+                    )
+                )
+            if isinstance(command, ReplaceSessionAnnotation):
+                return _session_annotation_view(
+                    self.__app_records.replace_session_annotation(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                        notes=command.notes,
+                        reliability=command.reliability,
+                        duplicate=command.duplicate,
+                    )
+                )
+            if isinstance(command, DeleteSessionAnnotation):
+                return _deleted_view(
+                    self.__app_records.delete_session_annotation(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                    )
+                )
+            if isinstance(command, CreateGoalEvent):
+                return _goal_event_view(
+                    self.__app_records.create_goal_event(
+                        actor.issuer, actor.subject, command.content
+                    )
+                )
+            if isinstance(command, ReplaceGoalEvent):
+                return _goal_event_view(
+                    self.__app_records.replace_goal_event(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                        command.content,
+                    )
+                )
+            if isinstance(command, DeleteGoalEvent):
+                return _deleted_view(
+                    self.__app_records.delete_goal_event(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                    )
+                )
+            if isinstance(command, CreateTrainingPlan):
+                return _training_plan_view(
+                    self.__app_records.create_training_plan(
+                        actor.issuer,
+                        actor.subject,
+                        command.name,
+                        command.starts_on,
+                        command.ends_on,
+                        command.reason,
+                        goal_events=command.goal_events,
+                        constraints=command.constraints,
+                        planned_sessions=command.planned_sessions,
+                    )
+                )
+            if isinstance(command, ActivateTrainingPlan):
+                return _training_plan_view(
+                    self.__app_records.activate_training_plan(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                        command.reason,
+                    )
+                )
+            if isinstance(command, ArchiveTrainingPlan):
+                return _training_plan_view(
+                    self.__app_records.archive_training_plan(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                        command.reason,
+                    )
+                )
+            if isinstance(command, DeleteTrainingPlan):
+                return _deleted_view(
+                    self.__app_records.delete_training_plan(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                    )
+                )
+            if isinstance(command, AdjustTrainingPlan):
+                return _training_plan_view(
+                    self.__app_records.adjust_training_plan(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                        command.reason,
+                        command.effective_from,
+                        command.operations,
+                        name=command.name,
+                        starts_on=command.starts_on,
+                        ends_on=command.ends_on,
+                        goal_events=command.goal_events,
+                        constraints=command.constraints,
+                    )
+                )
+            if isinstance(command, SetPlannedSessionFulfilment):
+                return _training_plan_view(
+                    self.__app_records.set_planned_session_fulfilment(
+                        actor.issuer,
+                        actor.subject,
+                        command.id,
+                        command.expected_revision,
+                        command.planned_session_id,
+                        command.disposition,
+                        command.reason,
+                        command.matches,
+                        command.fulfilment_note,
+                    )
+                )
             raise InvalidRequest("unsupported application command")
 
     def ingest(
@@ -1042,6 +1555,16 @@ def _stable_errors() -> Iterator[None]:
         raise AccessDenied("requested record is not available") from None
     except _IdempotencyConflict:
         raise Conflict("idempotency key conflicts with existing state") from None
+    except _AppRecordStale:
+        raise StaleRevision("revision does not match current state") from None
+    except _AppRecordNotFound:
+        raise NotFound("requested record is not available") from None
+    except _AppRecordReadOnly:
+        raise Conflict("requested record is read-only") from None
+    except _AppRecordConflict:
+        raise Conflict("operation conflicts with current state") from None
+    except AppRecordStoreError as exc:
+        raise InvalidRequest(str(exc)) from None
     except CaptureStoreError as exc:
         raise InvalidRequest(str(exc)) from None
     except psycopg.DataError:
@@ -1063,4 +1586,89 @@ def _profile_view(stored: _StoredProfile) -> ProfileView:
         profile=ProfileRef._from_uuid(stored.id),
         display_name=stored.display_name,
         revision=stored.revision,
+    )
+
+
+def _training_session_record_view(
+    record: Mapping[str, Any],
+) -> TrainingSessionRecordView:
+    envelope = {
+        "id", "origin", "ownership", "provenance", "created_at",
+        "updated_at", "revision",
+    }
+    return TrainingSessionRecordView(
+        id=record["id"],
+        origin=record["origin"],
+        ownership=record["ownership"],
+        content={key: value for key, value in record.items() if key not in envelope},
+        provenance=record["provenance"],
+        created_at=record["created_at"],
+        updated_at=record["updated_at"],
+        revision=record["revision"],
+    )
+
+
+def _session_annotation_view(record: Mapping[str, Any]) -> SessionAnnotationView:
+    return SessionAnnotationView(
+        id=record["id"],
+        origin=record["origin"],
+        training_session_id=record["training_session_id"],
+        notes=record["notes"],
+        reliability=record["reliability"],
+        duplicate=record["duplicate"],
+        provenance=record["provenance"],
+        created_at=record["created_at"],
+        updated_at=record["updated_at"],
+        revision=record["revision"],
+    )
+
+
+def _goal_event_view(record: Mapping[str, Any]) -> GoalEventView:
+    envelope = {"id", "origin", "provenance", "created_at", "updated_at", "revision"}
+    return GoalEventView(
+        id=record["id"],
+        origin=record["origin"],
+        content={key: value for key, value in record.items() if key not in envelope},
+        provenance=record["provenance"],
+        created_at=record["created_at"],
+        updated_at=record["updated_at"],
+        revision=record["revision"],
+    )
+
+
+def _training_plan_view(record: Mapping[str, Any]) -> TrainingPlanView:
+    envelope = {"id", "origin", "provenance", "created_at", "updated_at", "revision"}
+    return TrainingPlanView(
+        id=record["id"],
+        origin=record["origin"],
+        content={key: value for key, value in record.items() if key not in envelope},
+        provenance=record["provenance"],
+        created_at=record["created_at"],
+        updated_at=record["updated_at"],
+        revision=record["revision"],
+    )
+
+
+def _training_plan_history_view(
+    record: Mapping[str, Any],
+) -> TrainingPlanHistoryView:
+    return TrainingPlanHistoryView(
+        id=record["id"],
+        revisions=tuple(
+            PlanRevisionView(
+                revision=item["revision"],
+                kind=item["kind"],
+                recorded_at=item["recorded_at"],
+                reason=item["reason"],
+                effective_from=item["effective_from"],
+                plan=item["plan"],
+            )
+            for item in record["revisions"]
+        ),
+    )
+
+
+def _deleted_view(record: Mapping[str, Any]) -> DeletedAppRecordView:
+    return DeletedAppRecordView(
+        id=record["id"], revision=record["revision"], deleted=record["deleted"]
     )

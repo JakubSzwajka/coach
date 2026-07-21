@@ -105,4 +105,6 @@ env -i \
     tests.postgres.postgres_test_capture_schema \
     tests.postgres.postgres_test_application \
     tests.postgres.postgres_test_ingestion_collection \
+    tests.postgres.postgres_test_app_records \
+    tests.postgres.postgres_test_app_contract \
     --verbose

@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 import psycopg
 
@@ -16,7 +18,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 class PostgreSQLRuntimeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.database_url = test_database().migration_url
+        database = test_database()
+        cls.database_url = database.migration_url
+        cls.application_url = database.application_url
 
     def _migration(self, *arguments: str, database_url: str | None = None):
         environment = {
@@ -42,6 +46,189 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
             check=False,
         )
 
+    def test_0005_downgrade_preserves_collected_state_and_refuses_app_loss(self) -> None:
+        self.assertEqual(self._migration("upgrade").returncode, 0)
+        profile_id, source_id, record_id, capture_id, session_id = (
+            uuid4() for _ in range(5)
+        )
+        with psycopg.connect(self.database_url) as connection:
+            connection.execute("TRUNCATE TABLE profiles CASCADE")
+            connection.execute(
+                "INSERT INTO profiles (id, clerk_issuer, clerk_subject) VALUES (%s, %s, %s)",
+                (profile_id, "https://identity.example.test", "migration-synthetic"),
+            )
+            connection.execute(
+                """
+                INSERT INTO source_connections (
+                    profile_id, id, provider, connection_key
+                ) VALUES (%s, %s, 'synthetic', 'migration-source')
+                """,
+                (profile_id, source_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO collected_records (
+                    profile_id, id, source_connection_id, record_kind, source_key
+                ) VALUES (%s, %s, %s, 'activity', 'migration-record')
+                """,
+                (profile_id, record_id, source_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO collected_record_captures (
+                    profile_id, id, collected_record_id, content_hash, payload
+                ) VALUES (%s, %s, %s, %s, '{}'::jsonb)
+                """,
+                (profile_id, capture_id, record_id, b"x" * 32),
+            )
+            connection.execute(
+                """
+                INSERT INTO training_sessions (
+                    profile_id, id, ownership, collected_record_id,
+                    current_capture_id, local_date, timing_precision, sport
+                ) VALUES (%s, %s, 'collected', %s, %s, DATE '2026-07-20',
+                          'date_only', 'running')
+                """,
+                (profile_id, session_id, record_id, capture_id),
+            )
+
+        downgraded = self._migration("downgrade", "0004_ingestion_collection_state")
+        self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
+        with psycopg.connect(self.database_url) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT ownership FROM training_sessions WHERE id = %s",
+                    (session_id,),
+                ).fetchone(),
+                ("collected",),
+            )
+            self.assertIsNone(
+                connection.execute(
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'training_sessions'
+                      AND column_name = 'app_revision'
+                    """
+                ).fetchone()
+            )
+        self.assertEqual(self._migration("upgrade").returncode, 0)
+
+        with psycopg.connect(self.database_url) as connection:
+            connection.execute(
+                """
+                INSERT INTO training_sessions (
+                    profile_id, id, ownership, app_revision, local_date,
+                    timing_precision, sport
+                ) VALUES (%s, %s, 'app', 1, DATE '2026-07-20',
+                          'date_only', 'running')
+                """,
+                (profile_id, uuid4()),
+            )
+        refused = self._migration("downgrade", "0004_ingestion_collection_state")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("database migration failed", refused.stderr)
+        with psycopg.connect(self.database_url) as connection:
+            self.assertEqual(
+                connection.execute("SELECT version_num FROM alembic_version").fetchone(),
+                ("0005_transactional_app_records",),
+            )
+            connection.execute("TRUNCATE TABLE profiles CASCADE")
+
+    def test_0005_downgrade_waits_for_writer_then_refuses_committed_app_data(self) -> None:
+        self.assertEqual(self._migration("upgrade").returncode, 0)
+        profile_id = uuid4()
+        goal_id = uuid4()
+        with psycopg.connect(self.database_url) as connection:
+            connection.execute("TRUNCATE TABLE profiles CASCADE")
+            connection.execute(
+                "INSERT INTO profiles (id, clerk_issuer, clerk_subject) VALUES (%s, %s, %s)",
+                (profile_id, "https://identity.example.test", "downgrade-writer"),
+            )
+
+        writer = psycopg.connect(self.application_url)
+        process: subprocess.Popen[str] | None = None
+        try:
+            writer.execute(
+                """
+                INSERT INTO goal_events (
+                    profile_id, id, local_date, timing_precision,
+                    sport, name, priority, status
+                ) VALUES (%s, %s, DATE '2026-10-11', 'date_only',
+                          'running', 'Synthetic writer race', 'primary', 'scheduled')
+                """,
+                (profile_id, goal_id),
+            )
+            environment = {
+                key: os.environ[key]
+                for key in (
+                    "HOME", "LANG", "LC_ALL", "PATH", "SSL_CERT_FILE", "TMPDIR"
+                )
+                if key in os.environ
+            }
+            environment.update(
+                {
+                    "GARMIN_COACH_MIGRATION_DATABASE_URL": self.database_url,
+                    "GARMIN_COACH_DISABLE_DOTENV": "1",
+                    "PYTHONPATH": str(_PROJECT_ROOT),
+                }
+            )
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "coach.postgres.migrate",
+                    "downgrade",
+                    "0004_ingestion_collection_state",
+                ],
+                cwd=_PROJECT_ROOT,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                with psycopg.connect(self.database_url) as observer:
+                    waiting = observer.execute(
+                        """
+                        SELECT count(*) FROM pg_stat_activity
+                        WHERE datname = current_database()
+                          AND wait_event_type = 'Lock'
+                          AND position('LOCK TABLE profiles' in query) > 0
+                        """
+                    ).fetchone()[0]
+                if waiting:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("downgrade did not contend on its authority-root lock")
+
+            writer.commit()
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertNotEqual(process.returncode, 0)
+            self.assertIn("database migration failed", stderr)
+            self.assertNotIn("downgrade-writer", stdout + stderr)
+        finally:
+            writer.rollback()
+            writer.close()
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.communicate(timeout=5)
+
+        with psycopg.connect(self.database_url) as connection:
+            self.assertEqual(
+                connection.execute("SELECT version_num FROM alembic_version").fetchone(),
+                ("0005_transactional_app_records",),
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT name FROM goal_events WHERE profile_id = %s AND id = %s",
+                    (profile_id, goal_id),
+                ).fetchone(),
+                ("Synthetic writer race",),
+            )
+            connection.execute("TRUNCATE TABLE profiles CASCADE")
+
     def test_upgrade_is_idempotent_and_records_revision(self) -> None:
         first = self._migration("upgrade")
         second = self._migration("upgrade")
@@ -52,7 +239,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
             revision = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()
-        self.assertEqual(revision, ("0004_ingestion_collection_state",))
+        self.assertEqual(revision, ("0005_transactional_app_records",))
 
     def test_current_command_reports_the_applied_revision(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)
@@ -60,7 +247,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
         current = self._migration("current")
 
         self.assertEqual(current.returncode, 0, current.stderr)
-        self.assertIn("0004_ingestion_collection_state", current.stdout)
+        self.assertIn("0005_transactional_app_records", current.stdout)
 
     def test_downgrade_and_reupgrade_round_trip(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)
