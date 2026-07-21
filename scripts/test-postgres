@@ -104,4 +104,5 @@ env -i \
     tests.postgres.postgres_test_runtime \
     tests.postgres.postgres_test_capture_schema \
     tests.postgres.postgres_test_application \
+    tests.postgres.postgres_test_ingestion_collection \
     --verbose

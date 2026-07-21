@@ -36,11 +36,7 @@ class ProfileSourceCaptureSchemaTest(unittest.TestCase):
         with psycopg.connect(self.migration_url) as connection:
             connection.execute(
                 """
-                TRUNCATE TABLE
-                    collected_record_captures,
-                    collected_records,
-                    source_connections,
-                    profiles
+                TRUNCATE TABLE profiles CASCADE
                 """
             )
         self.store = CaptureStore(self.settings)
