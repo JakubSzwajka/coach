@@ -41,6 +41,7 @@ from .postgres._collection_store import (
     _RunLease,
     _StoredJob,
 )
+from .postgres._read_projection_store import ReadProjectionStore
 from .postgres._app_record_store import (
     AppRecordStore,
     AppRecordStoreError,
@@ -353,6 +354,11 @@ class SessionAnnotationView:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionAnnotationsView:
+    annotations: tuple[SessionAnnotationView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class GoalEventView:
     id: str
     origin: str
@@ -407,6 +413,200 @@ class TrainingPlanHistoryView:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservationPointView:
+    definition: str
+    status: str
+    value: Any | None = field(repr=False)
+    value_type: str
+    unit: str
+    window_kind: str
+    method: str
+    local_date: date | None = field(default=None, repr=False)
+    observed_at: datetime | None = field(default=None, repr=False)
+    window_start: datetime | None = field(default=None, repr=False)
+    window_end: datetime | None = field(default=None, repr=False)
+    source_identity: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TrendSeriesView:
+    definition: str
+    value_type: str
+    unit: str
+    window_kind: str
+    method: str
+    points: tuple[ObservationPointView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TrendsView:
+    starts_on: date
+    ends_on: date
+    series: tuple[TrendSeriesView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionDomainHealthView:
+    domain: str
+    outcome: str
+    safe_code: str | None
+    attempted_at: datetime | None = field(repr=False)
+    finished_at: datetime | None = field(repr=False)
+    last_success_at: datetime | None = field(repr=False)
+    checkpoint_revision: int | None = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionSourceHealthView:
+    source_identity: str = field(repr=False)
+    provider: str
+    state: str
+    domains: tuple[CollectionDomainHealthView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionHealthView:
+    records: int
+    captures: int
+    latest_collected_at: datetime | None = field(repr=False)
+    latest_training_session_date: date | None = field(repr=False)
+    latest_observation_date: date | None = field(repr=False)
+    sources: tuple[CollectionSourceHealthView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarSessionAnnotationView:
+    id: str
+    revision: int
+    notes: str | None = field(repr=False)
+    reliability: str | None
+    duplicate: bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarPlanMatchView:
+    plan_id: str
+    plan_name: str = field(repr=False)
+    plan_status: str
+    plan_revision: int
+    planned_session_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarMatchedSessionView:
+    training_session_id: str
+    ownership: str
+    local_date: date
+    sport: str
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarTrainingSessionView:
+    kind: str
+    id: str
+    local_date: date
+    local_start: str | None = field(repr=False)
+    timing_precision: str
+    origin: str
+    ownership: str
+    source_identity: str = field(repr=False)
+    content: Mapping[str, Any] = field(repr=False)
+    annotation: CalendarSessionAnnotationView | None = field(repr=False)
+    plan_matches: tuple[CalendarPlanMatchView, ...] = field(repr=False)
+    revision: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarPlannedSessionView:
+    kind: str
+    id: str
+    local_date: date
+    plan_id: str
+    plan_name: str = field(repr=False)
+    plan_status: str
+    plan_revision: int
+    plan_requires_review: bool
+    sport: str
+    session_type: str | None
+    prescription: str = field(repr=False)
+    target_duration_seconds: Any | None = field(repr=False)
+    target_distance_meters: Any | None = field(repr=False)
+    effort_guidance: str | None = field(repr=False)
+    disposition: str
+    fulfilment_note: str | None = field(repr=False)
+    matches: tuple[CalendarMatchedSessionView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarGoalReferenceView:
+    plan_id: str
+    plan_name: str = field(repr=False)
+    plan_status: str
+    plan_revision: int
+    referenced_revision: int
+    stale: bool
+    stale_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarGoalEventView:
+    kind: str
+    id: str
+    local_date: date
+    local_start: str | None = field(repr=False)
+    timing_precision: str
+    sport: str
+    name: str = field(repr=False)
+    priority: str
+    status: str
+    distance: Mapping[str, Any] | None = field(repr=False)
+    goal: Mapping[str, Any] | None = field(repr=False)
+    outcome: Mapping[str, Any] | None = field(repr=False)
+    notes: str | None = field(repr=False)
+    revision: int
+    requires_review: bool
+    plan_references: tuple[CalendarGoalReferenceView, ...] = field(repr=False)
+
+
+CalendarItemView = Union[
+    CalendarTrainingSessionView,
+    CalendarPlannedSessionView,
+    CalendarGoalEventView,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class UnifiedCalendarView:
+    starts_on: date
+    ends_on: date
+    items: tuple[CalendarItemView, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardView:
+    starts_on: date
+    ends_on: date
+    display_name: str | None = field(repr=False)
+    latest_observations: tuple[ObservationPointView, ...] = field(repr=False)
+    recent_sessions: tuple[TrainingSessionRecordView, ...] = field(repr=False)
+    active_plan: TrainingPlanView | None = field(repr=False)
+    goal_events: tuple[GoalEventView, ...] = field(repr=False)
+    collection_health: CollectionHealthView = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class CoachingContextView:
+    starts_on: date
+    ends_on: date
+    observations: tuple[ObservationPointView, ...] = field(repr=False)
+    sessions: tuple[TrainingSessionRecordView, ...] = field(repr=False)
+    plans: tuple[TrainingPlanView, ...] = field(repr=False)
+    goal_events: tuple[GoalEventView, ...] = field(repr=False)
+    calendar: tuple[CalendarItemView, ...] = field(repr=False)
+    collection_health: CollectionHealthView = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class DeletedAppRecordView:
     id: str
     revision: int
@@ -456,6 +656,41 @@ class GetTrainingPlanHistory:
     id: str
 
 
+@dataclass(frozen=True, slots=True)
+class ListSessionAnnotations:
+    training_session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GetDashboard:
+    starts_on: date
+    ends_on: date
+
+
+@dataclass(frozen=True, slots=True)
+class GetTrends:
+    starts_on: date
+    ends_on: date
+    definitions: Sequence[str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GetCoachingContext:
+    starts_on: date
+    ends_on: date
+
+
+@dataclass(frozen=True, slots=True)
+class GetCollectionHealth:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class GetUnifiedCalendar:
+    starts_on: date
+    ends_on: date
+
+
 Query = Union[
     GetProfile,
     GetCollectionSummary,
@@ -470,6 +705,12 @@ Query = Union[
     GetTrainingPlan,
     ListTrainingPlans,
     GetTrainingPlanHistory,
+    ListSessionAnnotations,
+    GetDashboard,
+    GetTrends,
+    GetCoachingContext,
+    GetCollectionHealth,
+    GetUnifiedCalendar,
 ]
 ReadResult = Union[
     ProfileView,
@@ -485,6 +726,12 @@ ReadResult = Union[
     TrainingPlanView,
     TrainingPlansView,
     TrainingPlanHistoryView,
+    SessionAnnotationsView,
+    DashboardView,
+    TrendsView,
+    CoachingContextView,
+    CollectionHealthView,
+    UnifiedCalendarView,
     None,
 ]
 
@@ -838,6 +1085,7 @@ class CoachApplication:
         self.__store = CaptureStore(settings)
         self.__collections = CollectionStore(settings)
         self.__app_records = AppRecordStore(settings, clock=clock)
+        self.__reads = ReadProjectionStore(settings)
         self.__adapter = collection_adapter
         self.__encryption_key = encryption_key
         self.__temporary_root = temporary_root
@@ -1008,6 +1256,42 @@ class CoachApplication:
                     actor.issuer, actor.subject, query.id
                 )
                 return _training_plan_history_view(record) if record else None
+            if isinstance(query, ListSessionAnnotations):
+                records = self.__app_records.list_session_annotations(
+                    actor.issuer, actor.subject, query.training_session_id
+                )
+                return SessionAnnotationsView(
+                    tuple(_session_annotation_view(item) for item in records)
+                )
+            if isinstance(query, GetDashboard):
+                projection = self.__reads.dashboard(
+                    actor.issuer, actor.subject, query.starts_on, query.ends_on
+                )
+                return _dashboard_view(projection) if projection else None
+            if isinstance(query, GetTrends):
+                projection = self.__reads.trends(
+                    actor.issuer,
+                    actor.subject,
+                    query.starts_on,
+                    query.ends_on,
+                    query.definitions,
+                )
+                return _trends_view(projection) if projection else None
+            if isinstance(query, GetCoachingContext):
+                projection = self.__reads.coaching_context(
+                    actor.issuer, actor.subject, query.starts_on, query.ends_on
+                )
+                return _coaching_context_view(projection) if projection else None
+            if isinstance(query, GetCollectionHealth):
+                projection = self.__reads.collection_health(
+                    actor.issuer, actor.subject
+                )
+                return _collection_health_view(projection) if projection else None
+            if isinstance(query, GetUnifiedCalendar):
+                projection = self.__reads.unified_calendar(
+                    actor.issuer, actor.subject, query.starts_on, query.ends_on
+                )
+                return _unified_calendar_view(projection) if projection else None
             raise InvalidRequest("unsupported application query")
 
     @overload
@@ -1665,6 +1949,190 @@ def _training_plan_history_view(
             )
             for item in record["revisions"]
         ),
+    )
+
+
+def _observation_point_view(record: Mapping[str, Any]) -> ObservationPointView:
+    return ObservationPointView(
+        definition=record["definition"],
+        status=record["status"],
+        value=record["value"],
+        value_type=record["value_type"],
+        unit=record["unit"],
+        window_kind=record["window_kind"],
+        method=record["method"],
+        local_date=record["local_date"],
+        observed_at=record["observed_at"],
+        window_start=record["window_start"],
+        window_end=record["window_end"],
+        source_identity=record["source_identity"],
+    )
+
+
+def _trends_view(record: Mapping[str, Any]) -> TrendsView:
+    return TrendsView(
+        starts_on=record["starts_on"],
+        ends_on=record["ends_on"],
+        series=tuple(
+            TrendSeriesView(
+                definition=item["definition"],
+                value_type=item["value_type"],
+                unit=item["unit"],
+                window_kind=item["window_kind"],
+                method=item["method"],
+                points=tuple(
+                    _observation_point_view(point) for point in item["points"]
+                ),
+            )
+            for item in record["series"]
+        ),
+    )
+
+
+def _collection_health_view(record: Mapping[str, Any]) -> CollectionHealthView:
+    return CollectionHealthView(
+        records=record["records"],
+        captures=record["captures"],
+        latest_collected_at=record["latest_collected_at"],
+        latest_training_session_date=record["latest_training_session_date"],
+        latest_observation_date=record["latest_observation_date"],
+        sources=tuple(
+            CollectionSourceHealthView(
+                source_identity=source["source_identity"],
+                provider=source["provider"],
+                state=source["state"],
+                domains=tuple(
+                    CollectionDomainHealthView(
+                        domain=domain["domain"],
+                        outcome=domain["outcome"],
+                        safe_code=domain["safe_code"],
+                        attempted_at=domain["attempted_at"],
+                        finished_at=domain["finished_at"],
+                        last_success_at=domain["last_success_at"],
+                        checkpoint_revision=domain["checkpoint_revision"],
+                    )
+                    for domain in source["domains"]
+                ),
+            )
+            for source in record["sources"]
+        ),
+    )
+
+
+def _calendar_item_view(record: Mapping[str, Any]) -> CalendarItemView:
+    if record["kind"] == "training_session":
+        annotation = record["annotation"]
+        return CalendarTrainingSessionView(
+            kind=record["kind"],
+            id=record["id"],
+            local_date=record["local_date"],
+            local_start=record["local_start"],
+            timing_precision=record["timing_precision"],
+            origin=record["origin"],
+            ownership=record["ownership"],
+            source_identity=record["source_identity"],
+            content=record["content"],
+            annotation=(
+                CalendarSessionAnnotationView(
+                    id=annotation["id"],
+                    revision=annotation["revision"],
+                    notes=annotation["notes"],
+                    reliability=annotation["reliability"],
+                    duplicate=annotation["duplicate"],
+                )
+                if annotation is not None
+                else None
+            ),
+            plan_matches=tuple(
+                CalendarPlanMatchView(**match) for match in record["plan_matches"]
+            ),
+            revision=record["revision"],
+        )
+    if record["kind"] == "planned_session":
+        return CalendarPlannedSessionView(
+            kind=record["kind"],
+            id=record["id"],
+            local_date=record["local_date"],
+            plan_id=record["plan_id"],
+            plan_name=record["plan_name"],
+            plan_status=record["plan_status"],
+            plan_revision=record["plan_revision"],
+            plan_requires_review=record["plan_requires_review"],
+            sport=record["sport"],
+            session_type=record["session_type"],
+            prescription=record["prescription"],
+            target_duration_seconds=record["target_duration_seconds"],
+            target_distance_meters=record["target_distance_meters"],
+            effort_guidance=record["effort_guidance"],
+            disposition=record["disposition"],
+            fulfilment_note=record["fulfilment_note"],
+            matches=tuple(
+                CalendarMatchedSessionView(**match) for match in record["matches"]
+            ),
+        )
+    return CalendarGoalEventView(
+        kind=record["kind"],
+        id=record["id"],
+        local_date=record["local_date"],
+        local_start=record["local_start"],
+        timing_precision=record["timing_precision"],
+        sport=record["sport"],
+        name=record["name"],
+        priority=record["priority"],
+        status=record["status"],
+        distance=record["distance"],
+        goal=record["goal"],
+        outcome=record["outcome"],
+        notes=record["notes"],
+        revision=record["revision"],
+        requires_review=record["requires_review"],
+        plan_references=tuple(
+            CalendarGoalReferenceView(**reference)
+            for reference in record["plan_references"]
+        ),
+    )
+
+
+def _unified_calendar_view(record: Mapping[str, Any]) -> UnifiedCalendarView:
+    return UnifiedCalendarView(
+        starts_on=record["starts_on"],
+        ends_on=record["ends_on"],
+        items=tuple(_calendar_item_view(item) for item in record["items"]),
+    )
+
+
+def _dashboard_view(record: Mapping[str, Any]) -> DashboardView:
+    active = record["active_plan"]
+    return DashboardView(
+        starts_on=record["starts_on"],
+        ends_on=record["ends_on"],
+        display_name=record["display_name"],
+        latest_observations=tuple(
+            _observation_point_view(item) for item in record["latest_observations"]
+        ),
+        recent_sessions=tuple(
+            _training_session_record_view(item) for item in record["recent_sessions"]
+        ),
+        active_plan=_training_plan_view(active) if active is not None else None,
+        goal_events=tuple(_goal_event_view(item) for item in record["goal_events"]),
+        collection_health=_collection_health_view(record["collection_health"]),
+    )
+
+
+def _coaching_context_view(record: Mapping[str, Any]) -> CoachingContextView:
+    return CoachingContextView(
+        starts_on=record["starts_on"],
+        ends_on=record["ends_on"],
+        observations=tuple(
+            _observation_point_view(item) for item in record["observations"]
+        ),
+        sessions=tuple(
+            _training_session_record_view(item) for item in record["sessions"]
+        ),
+        plans=tuple(_training_plan_view(item) for item in record["plans"]),
+        goal_events=tuple(_goal_event_view(item) for item in record["goal_events"]),
+        calendar=tuple(_calendar_item_view(item) for item in record["calendar"]),
+        collection_health=_collection_health_view(record["collection_health"]),
     )
 
 

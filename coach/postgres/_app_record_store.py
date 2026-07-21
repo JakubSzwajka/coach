@@ -285,6 +285,35 @@ class AppRecordStore:
             except _AppRecordNotFound:
                 return None
 
+    def list_session_annotations(
+        self,
+        issuer: str,
+        subject: str,
+        training_session_id: str | None,
+    ) -> list[dict[str, Any]]:
+        target_id: UUID | None = None
+        if training_session_id is not None:
+            target_id, ownership = _decode_training_session(training_session_id)
+            if ownership != "collected":
+                raise AppRecordStoreError(
+                    "session annotations require a collected Training Session"
+                )
+        with psycopg.connect(self._settings.url) as connection:
+            profile_id = self._profile(connection, issuer, subject)
+            rows = connection.execute(
+                """
+                SELECT id FROM session_annotations
+                WHERE profile_id = %s
+                  AND (%s::uuid IS NULL OR training_session_id = %s)
+                ORDER BY created_at, id
+                """,
+                (profile_id, target_id, target_id),
+            ).fetchall()
+            return [
+                self._session_annotation(connection, profile_id, row[0])
+                for row in rows
+            ]
+
     def replace_session_annotation(
         self,
         issuer: str,

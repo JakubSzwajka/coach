@@ -107,4 +107,5 @@ env -i \
     tests.postgres.postgres_test_ingestion_collection \
     tests.postgres.postgres_test_app_records \
     tests.postgres.postgres_test_app_contract \
+    tests.postgres.postgres_test_read_projections \
     --verbose
