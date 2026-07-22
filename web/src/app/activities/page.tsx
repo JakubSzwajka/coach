@@ -1,15 +1,11 @@
 import { ActivitiesTable } from "@/components/activities-table";
-import { NoProfile } from "@/components/no-profile";
 import { Card, CardContent } from "@/components/ui/card";
-import { readActivities } from "@/lib/coach-data";
-import { currentProfileRoot } from "@/lib/profile";
+import { getActivities } from "@/lib/coach-client";
 
 export const dynamic = "force-dynamic";
 
 export default async function ActivitiesPage() {
-  const root = await currentProfileRoot();
-  if (!root) return <NoProfile />;
-  const activities = await readActivities(root);
+  const activities = await getActivities();
 
   return (
     <div className="space-y-6">
@@ -22,7 +18,7 @@ export default async function ActivitiesPage() {
       {activities.length === 0 ? (
         <Card>
           <CardContent className="text-muted-foreground py-8 text-sm">
-            No activities. Run the collector and reload.
+            No activities. Connect Garmin or refresh the collector and reload.
           </CardContent>
         </Card>
       ) : (

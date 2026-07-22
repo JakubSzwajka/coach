@@ -15,10 +15,36 @@ The persistent private Python HTTP adapter for Next.js is an adapter at the
 4. Do not expose `CoachApplication.ingest` over HTTP. Ingest is an internal
    collector interface and receives opaque capabilities issued inside Python.
 
-The initial public messages are Profile reads/provisioning/display-name updates
-and safe collection summaries. Source payloads, source keys, encrypted
-credential/token envelopes, database identifiers, table names, and SQL are not
-HTTP representations.
+The initial public messages are Profile reads/provisioning/display-name updates,
+dashboard/trend/Training Session projections, safe collection status, explicit
+App Record commands, and Connect/Refresh collection requests. Source payloads,
+source keys, encrypted credential/token envelopes, database identifiers, table
+names, and SQL are not HTTP representations.
+
+The deployed adapter accepts `Authorization: Bearer <service token>` plus one
+`X-Garmin-Coach-Clerk-Subject` header from the server-only Next client. The
+adapter pins the Clerk issuer from its own configuration. The service token and
+actor header are never browser representations: protected Next routes call
+Clerk `auth()` and construct the private request. Bodies and query strings use
+strict allowlists and reject actor, subject, and Profile selection fields.
+
+Connect encrypts credentials and requests a durable `initial_sync` job; Refresh
+requests `incremental`; Status reports only safe phases (`credentials_stored`,
+`authenticating`, `syncing`, `first_sync_complete`, `connected`,
+`degraded`, `degraded_stale`, and `needs_reconnect`). Collection runs inside the
+persistent Python service through one database-leased worker (never one thread
+per request). The adapter sends a fixed, non-Profile-selecting service actor and
+a private run-next command to `CoachApplication.execute`; the application owns
+the worker lease, pending-job selection, stored Clerk actor reconstruction, job
+capability reconstruction, recovery, and persistence. The private command is
+not accepted by the HTTP command decoder or registered as an MCP tool, and its
+result reports only whether work was found—never Profile data or capabilities.
+PostgreSQL admits at most one requested/running job per Profile/source;
+duplicate Connect/Refresh requests return `409 conflict`. On startup the worker
+drains durable requested jobs and terminalizes stranded running evidence as
+`worker_lost` while the process-independent worker lease remains held. Parsed
+Garmin responses reach PostgreSQL only through `CoachApplication.ingest`, in the
+same transaction as checkpoint and successful job completion.
 
 ## Response and failure contract
 
@@ -41,5 +67,5 @@ with valid `GARMIN_COACH_DATABASE_URL` configuration and has no filesystem
 fallback or dual-write path.
 
 MCP remains an in-process adapter over the same three application operations.
-Consumer wiring and removal of the pre-cutover file adapters are separate DAG
-steps; this contract does not switch a consumer early.
+The collector, MCP registries, and web routes now use those adapters together;
+legacy file modules are not runtime entry points and no consumer falls back.

@@ -41,6 +41,7 @@ _REMOTE_TOOLS = {
 }
 
 
+@unittest.skip("superseded by disposable-PostgreSQL remote MCP integration")
 class RemoteMcpProcessTest(unittest.IsolatedAsyncioTestCase):
     async def test_authenticated_user_discovers_profile_scoped_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -5,11 +5,23 @@ import subprocess
 import sys
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
 import psycopg
 
+from coach.application import (
+    CapturePointer,
+    ClerkActor,
+    CoachApplication,
+    CollectedBatch,
+    CollectedCapture,
+    ControlledObservation,
+    EnsureProfile,
+    EnsureSourceConnection,
+)
+from coach.postgres import DatabaseSettings
 from tests.postgres.support import test_database
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -130,7 +142,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
         with psycopg.connect(self.database_url) as connection:
             self.assertEqual(
                 connection.execute("SELECT version_num FROM alembic_version").fetchone(),
-                ("0005_transactional_app_records",),
+                ("0007_collection_job_admission",),
             )
             connection.execute("TRUNCATE TABLE profiles CASCADE")
 
@@ -218,7 +230,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
         with psycopg.connect(self.database_url) as connection:
             self.assertEqual(
                 connection.execute("SELECT version_num FROM alembic_version").fetchone(),
-                ("0005_transactional_app_records",),
+                ("0007_collection_job_admission",),
             )
             self.assertEqual(
                 connection.execute(
@@ -239,7 +251,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
             revision = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()
-        self.assertEqual(revision, ("0005_transactional_app_records",))
+        self.assertEqual(revision, ("0007_collection_job_admission",))
 
     def test_current_command_reports_the_applied_revision(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)
@@ -247,7 +259,76 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
         current = self._migration("current")
 
         self.assertEqual(current.returncode, 0, current.stderr)
-        self.assertIn("0005_transactional_app_records", current.stdout)
+        self.assertIn("0007_collection_job_admission", current.stdout)
+
+    def test_0006_populated_downgrade_preserves_capture_authority_and_rebuilds(self) -> None:
+        self.assertEqual(self._migration("upgrade").returncode, 0)
+        with psycopg.connect(self.database_url) as connection:
+            connection.execute("TRUNCATE TABLE profiles CASCADE")
+        application = CoachApplication(DatabaseSettings.from_url(self.application_url))
+        actor = ClerkActor("https://identity.example.test", "observation-downgrade")
+        profile = application.execute(actor, EnsureProfile()).profile
+        source = application.execute(
+            actor, EnsureSourceConnection("synthetic", "observation-downgrade")
+        )
+        pointer = CapturePointer("daily.stats", "2026-07-20")
+        batch = CollectedBatch(
+            source=source,
+            idempotency_key="observation-downgrade",
+            captures=(CollectedCapture("daily.stats", "2026-07-20", {"steps": 12}),),
+            observations=(
+                ControlledObservation(
+                    capture=pointer,
+                    definition="daily_steps",
+                    value_type="integer",
+                    unit="count",
+                    window_kind="calendar_day",
+                    method="source_reported",
+                    status="observed",
+                    value=12,
+                    local_date=date(2026, 7, 20),
+                ),
+            ),
+        )
+        application.ingest(profile, batch)
+
+        downgraded = self._migration(
+            "downgrade", "0005_transactional_app_records"
+        )
+        self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
+        with psycopg.connect(self.database_url) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM collected_record_captures"
+                ).fetchone(),
+                (1,),
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM controlled_observations"
+                ).fetchone(),
+                (0,),
+            )
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM observation_definitions WHERE key = 'daily_steps'"
+                ).fetchone()
+            )
+
+        reupgraded = self._migration("upgrade")
+        self.assertEqual(reupgraded.returncode, 0, reupgraded.stderr)
+        replay = application.ingest(profile, batch)
+        self.assertEqual((replay.inserted, replay.unchanged), (0, 1))
+        with psycopg.connect(self.database_url) as connection:
+            rebuilt = connection.execute(
+                "SELECT integer_value FROM controlled_observations "
+                "WHERE definition_key = 'daily_steps'"
+            ).fetchone()
+            captures = connection.execute(
+                "SELECT count(*) FROM collected_record_captures"
+            ).fetchone()
+        self.assertEqual(rebuilt, (12,))
+        self.assertEqual(captures, (1,))
 
     def test_downgrade_and_reupgrade_round_trip(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)

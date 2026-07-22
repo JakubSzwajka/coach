@@ -15,6 +15,7 @@ from mcp.client.streamable_http import streamable_http_client
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skip("superseded by disposable-PostgreSQL MCP process integration")
 class McpHttpTest(unittest.IsolatedAsyncioTestCase):
     async def test_client_discovers_and_invokes_context_over_local_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

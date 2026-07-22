@@ -21,8 +21,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { Activity } from "@/lib/coach-data";
-import { fmtDuration, fmtInt, fmtKm, fmtNum, fmtShortDate } from "@/lib/format";
+import type { TrainingSession } from "@/lib/coach-client";
+import { fmtDuration, fmtInt, fmtKm, fmtShortDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 declare module "@tanstack/react-table" {
@@ -32,7 +32,7 @@ declare module "@tanstack/react-table" {
 }
 
 function sortHeader(label: string) {
-  return ({ column }: { column: Column<Activity, unknown> }) => (
+  return ({ column }: { column: Column<TrainingSession, unknown> }) => (
     <Button
       variant="ghost"
       size="sm"
@@ -46,68 +46,65 @@ function sortHeader(label: string) {
   );
 }
 
-const columns: ColumnDef<Activity>[] = [
+const columns: ColumnDef<TrainingSession>[] = [
   {
-    accessorKey: "start_local",
+    accessorKey: "local_start",
     header: sortHeader("Date"),
     cell: ({ row }) => (
-      <span className="whitespace-nowrap">{fmtShortDate(row.original.start_local)}</span>
+      <span className="whitespace-nowrap">
+        {fmtShortDate(row.original.local_start ?? row.original.local_date)}
+      </span>
     ),
   },
   {
-    accessorKey: "name",
+    accessorKey: "title",
     header: "Activity",
     cell: ({ row }) => (
-      <span className="block max-w-[280px] truncate font-medium">{row.original.name}</span>
+      <span className="block max-w-[280px] truncate font-medium">
+        {row.original.title ?? "Untitled session"}
+      </span>
     ),
   },
   {
-    accessorKey: "type",
+    accessorKey: "sport",
     header: "Sport",
     cell: ({ row }) =>
-      row.original.type ? (
+      row.original.sport ? (
         <Badge variant="outline" className="capitalize">
-          {row.original.type}
+          {row.original.sport}
         </Badge>
       ) : (
         "—"
       ),
   },
   {
-    accessorKey: "distance_m",
+    id: "distance",
+    accessorFn: (row) => row.distance?.value,
     header: sortHeader("Distance"),
     meta: { align: "right" },
-    cell: ({ row }) => fmtKm(row.original.distance_m),
+    cell: ({ row }) =>
+      fmtKm(row.original.distance?.unit === "metres" ? row.original.distance.value : undefined),
   },
   {
-    accessorKey: "duration_s",
+    id: "duration",
+    accessorFn: (row) => row.duration?.value,
     header: sortHeader("Duration"),
     meta: { align: "right" },
-    cell: ({ row }) => fmtDuration(row.original.duration_s),
-  },
-  {
-    accessorKey: "avg_hr",
-    header: sortHeader("Avg HR"),
-    meta: { align: "right" },
-    cell: ({ row }) => fmtInt(row.original.avg_hr),
-  },
-  {
-    accessorKey: "elevation_gain_m",
-    header: sortHeader("Elev"),
-    meta: { align: "right" },
     cell: ({ row }) =>
-      row.original.elevation_gain_m == null ? "—" : `${fmtInt(row.original.elevation_gain_m)} m`,
+      fmtDuration(
+        row.original.duration?.unit === "seconds" ? row.original.duration.value : undefined,
+      ),
   },
   {
-    accessorKey: "training_effect_aerobic",
-    header: sortHeader("TE aer"),
+    accessorKey: "session_rpe",
+    header: sortHeader("RPE"),
     meta: { align: "right" },
-    cell: ({ row }) => fmtNum(row.original.training_effect_aerobic),
+    cell: ({ row }) => fmtInt(row.original.session_rpe ?? undefined),
   },
 ];
 
-export function ActivitiesTable({ activities }: { activities: Activity[] }) {
-  const [sorting, setSorting] = useState<SortingState>([{ id: "start_local", desc: true }]);
+export function ActivitiesTable({ activities }: { activities: TrainingSession[] }) {
+  const [sorting, setSorting] = useState<SortingState>([{ id: "local_start", desc: true }]);
   const table = useReactTable({
     data: activities,
     columns,

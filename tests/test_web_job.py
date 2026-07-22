@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from coach.credentials import CredentialStore
 from coach.profiles import ProfileRegistry
-from coach import web_job
+from tests import legacy_file_web_job as web_job
 
 
 class WebJobTests(unittest.TestCase):

@@ -7,41 +7,45 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-interface JobStatus {
-  state: "running" | "succeeded" | "failed";
-  action: "connect" | "refresh";
-  step: string;
-  error?: string;
-  progress?: { current: number; total: number };
-}
-
 interface GarminStatus {
   connected: boolean;
-  job: JobStatus | null;
+  phase:
+    | "not_connected"
+    | "credentials_stored"
+    | "authenticating"
+    | "syncing"
+    | "first_sync_complete"
+    | "connected"
+    | "degraded"
+    | "degraded_stale"
+    | "needs_reconnect";
+  safe_code?: string | null;
+  job: {
+    state: "requested" | "running" | "succeeded" | "failed";
+    kind: "initial_sync" | "incremental";
+    safe_code?: string | null;
+  } | null;
 }
 
 const ERROR_LABELS: Record<string, string> = {
-  collection_degraded: "Garmin returned incomplete data. Try again shortly.",
-  collection_failed: "Garmin collection failed. Check the credentials and try again.",
+  application_unavailable: "The Coach service is unavailable. Try again shortly.",
+  collection_failed: "Garmin collection failed. Try again shortly.",
+  conflict: "A Garmin update is already running or the connection is unavailable.",
   invalid_request: "The connection details were rejected.",
-  job_stale: "The previous job stopped responding. Start it again.",
-  job_unavailable: "Could not start the Garmin update.",
-  not_connected: "Connect Garmin before refreshing.",
-  worker_exited: "The background collector stopped. Start the backfill again.",
+  rate_limited: "Garmin is rate limiting requests. Try again later.",
 };
-function runningLabel(job: JobStatus): string {
-  if (job.step === "securing_credentials") return "Encrypting credentials…";
-  if (job.step === "authenticating") return "Signing in to Garmin…";
-  if (job.step === "daily" && job.progress) {
-    const prefix = job.action === "connect" ? "Backfilling" : "Refreshing";
-    return `${prefix} day ${job.progress.current} / ${job.progress.total}`;
-  }
-  if (job.step === "plans") return "Updating plans…";
-  if (job.step === "activities") return "Updating activities…";
-  if (job.step === "profile") return "Updating athlete profile…";
-  if (job.step === "finalizing") return "Finalizing…";
-  return job.action === "connect" ? "Connecting…" : "Refreshing…";
-}
+
+const PHASE_LABELS: Record<GarminStatus["phase"], string | null> = {
+  not_connected: null,
+  credentials_stored: "Credentials stored; waiting to authenticate…",
+  authenticating: "Authenticating with Garmin…",
+  syncing: "Syncing Garmin data…",
+  first_sync_complete: "First Garmin sync complete",
+  connected: null,
+  degraded: "Sync failed before the first complete import.",
+  degraded_stale: "Refresh failed; showing prior data.",
+  needs_reconnect: "Garmin needs to be reconnected.",
+};
 
 export function GarminControls() {
   const router = useRouter();
@@ -58,7 +62,10 @@ export function GarminControls() {
     if (!response.ok) return;
     const next = (await response.json()) as GarminStatus;
     setStatus(next);
-    if (lastJobState.current === "running" && next.job?.state === "succeeded") {
+    if (
+      ["requested", "running"].includes(lastJobState.current ?? "") &&
+      next.job?.state === "succeeded"
+    ) {
       router.refresh();
     }
     lastJobState.current = next.job?.state ?? null;
@@ -68,11 +75,12 @@ export function GarminControls() {
     void loadStatus();
   }, [loadStatus]);
 
+  const running = status?.job?.state === "requested" || status?.job?.state === "running";
   useEffect(() => {
-    if (status?.job?.state !== "running") return;
+    if (!running) return;
     const timer = window.setInterval(() => void loadStatus(), 1500);
     return () => window.clearInterval(timer);
-  }, [loadStatus, status?.job?.state]);
+  }, [loadStatus, running]);
 
   useEffect(() => {
     if (!modalOpen) return;
@@ -85,7 +93,6 @@ export function GarminControls() {
 
   const startJob = async (endpoint: string, body?: object) => {
     setFormError(null);
-    const action = endpoint.endsWith("connect") ? "connect" : "refresh";
     const response = await fetch(endpoint, {
       method: "POST",
       headers: body ? { "Content-Type": "application/json" } : undefined,
@@ -93,26 +100,18 @@ export function GarminControls() {
     });
     if (!response.ok) {
       const result = (await response.json().catch(() => ({}))) as { error?: string };
-      const error = result.error ?? "job_unavailable";
-      const message =
-        error === "job_running"
-          ? "A Garmin update is already running."
-          : (ERROR_LABELS[error] ?? "Could not start the Garmin update.");
-      setFormError(message);
-      if (error === "job_running") {
-        await loadStatus();
-      } else if (action === "refresh") {
-        setStatus((current) => ({
-          connected: current?.connected ?? false,
-          job: { state: "failed", action, step: "failed", error },
-        }));
-      }
+      setFormError(ERROR_LABELS[result.error ?? ""] ?? "Could not start the Garmin update.");
+      await loadStatus();
       return false;
     }
-    lastJobState.current = "running";
+    lastJobState.current = "requested";
     setStatus((current) => ({
       connected: current?.connected ?? false,
-      job: { state: "running", action, step: "starting" },
+      phase: endpoint.endsWith("connect") ? "credentials_stored" : "syncing",
+      job: {
+        state: "requested",
+        kind: endpoint.endsWith("connect") ? "initial_sync" : "incremental",
+      },
     }));
     return true;
   };
@@ -124,28 +123,18 @@ export function GarminControls() {
     if (started) setModalOpen(false);
   };
 
-  const job = status?.job;
-  const running = job?.state === "running";
-  const statusLabel =
-    job?.state === "running"
-      ? runningLabel(job)
-      : job?.state === "failed"
-        ? (ERROR_LABELS[job.error ?? ""] ?? "Garmin update failed.")
-        : null;
-  const compactProgress =
-    running && job?.step === "daily" && job.progress
-      ? `${job.progress.current}/${job.progress.total}`
-      : null;
+  const statusLabel = status ? PHASE_LABELS[status.phase] : null;
+  const canRefresh = status?.connected && status.phase !== "needs_reconnect";
 
   return (
     <>
       <div className="flex items-center gap-2">
         {statusLabel ? (
-          <span className="text-muted-foreground hidden max-w-52 truncate text-xs lg:inline">
+          <span className="text-muted-foreground hidden max-w-64 truncate text-xs lg:inline">
             {statusLabel}
           </span>
         ) : null}
-        {status?.connected ? (
+        {canRefresh ? (
           <Button
             variant="outline"
             size="sm"
@@ -153,12 +142,16 @@ export function GarminControls() {
             onClick={() => void startJob("/api/garmin/refresh")}
           >
             <RefreshCw className={running ? "animate-spin" : ""} />
-            {running ? (compactProgress ?? "Updating") : "Refresh Garmin"}
+            {running ? "Updating" : "Refresh Garmin"}
           </Button>
         ) : (
           <Button size="sm" disabled={running} onClick={() => setModalOpen(true)}>
             {running ? <RefreshCw className="animate-spin" /> : <Unplug />}
-            {running ? (compactProgress ?? "Connecting") : "Connect Garmin"}
+            {running
+              ? "Connecting"
+              : status?.phase === "needs_reconnect"
+                ? "Reconnect Garmin"
+                : "Connect Garmin"}
           </Button>
         )}
       </div>
@@ -174,12 +167,11 @@ export function GarminControls() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 id="garmin-connect-title" className="text-lg font-semibold">
-                  Connect Garmin
+                  {status?.phase === "needs_reconnect" ? "Reconnect Garmin" : "Connect Garmin"}
                 </h2>
                 <p className="text-muted-foreground mt-1 text-sm">
-                  Credentials go directly to the server, are encrypted before storage, and are never
-                  stored by the browser. Configure an external secret key to keep key material
-                  outside the data volume.
+                  Credentials go to the private Coach service, are encrypted before PostgreSQL
+                  storage, and are never stored by the browser.
                 </p>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setModalOpen(false)}>

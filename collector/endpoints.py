@@ -1,9 +1,9 @@
 """Declarative map of what to pull.
 
 Each spec is (name, fn). Daily specs take (client, iso_date); snapshot specs
-take (client). Every call is wrapped in try/except by the runner, so an
-unsupported metric for your device/account just records a skip and the run
-continues. Add a line here to collect more.
+take (client). A provider-declared ``None`` is valid no-data; an exception is an
+endpoint failure and the PostgreSQL collector must not report fresh success.
+Add a line here to collect more.
 """
 
 from __future__ import annotations

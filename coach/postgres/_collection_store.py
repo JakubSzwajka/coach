@@ -97,6 +97,36 @@ class _StoredStatus:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class _StoredSourceOverview:
+    profile_id: UUID
+    source_connection_id: UUID
+    provider: str
+    state: str
+    credentials_stored: bool
+    last_authenticated_at: datetime | None
+    reconnect_safe_code: str | None
+    latest_job: _StoredJob | None
+    initial_sync: _StoredStatus
+    incremental: _StoredStatus
+
+    def __repr__(self) -> str:
+        return (
+            "_StoredSourceOverview("
+            f"provider={self.provider!r}, state={self.state!r}, <redacted>)"
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _PendingWork:
+    issuer: str
+    subject: str
+    job: _StoredJob
+
+    def __repr__(self) -> str:
+        return "_PendingWork(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class _RunLease:
     job: _StoredJob
     run_id: UUID
@@ -126,52 +156,131 @@ class CollectionStore:
         if kind not in {"initial_sync", "incremental"}:
             raise CaptureStoreError("collection kind is unsupported")
         with psycopg.connect(self._settings.url) as connection:
-            source = connection.execute(
-                """
-                SELECT sc.profile_id
-                FROM source_connections AS sc
-                JOIN profiles AS p ON p.id = sc.profile_id
-                WHERE p.clerk_issuer = %s AND p.clerk_subject = %s
-                  AND sc.id = %s
-                """,
-                (issuer, subject, source_connection_id),
+            return self.request_for_actor_on_connection(
+                connection,
+                issuer,
+                subject,
+                source_connection_id,
+                request_key,
+                kind,
+            )
+
+    def request_for_actor_on_connection(
+        self,
+        connection: psycopg.Connection,
+        issuer: str,
+        subject: str,
+        source_connection_id: UUID,
+        request_key: str,
+        kind: str,
+    ) -> _StoredJob:
+        request_key = _required_text(request_key, "request_key")
+        if kind not in {"initial_sync", "incremental"}:
+            raise CaptureStoreError("collection kind is unsupported")
+        source = connection.execute(
+            """
+            SELECT sc.profile_id
+            FROM source_connections AS sc
+            JOIN profiles AS p ON p.id = sc.profile_id
+            WHERE p.clerk_issuer = %s AND p.clerk_subject = %s
+              AND sc.id = %s
+            """,
+            (issuer, subject, source_connection_id),
+        ).fetchone()
+        if source is None:
+            raise _AccessDenied("source connection is not available")
+        profile_id = source[0]
+        job_id = uuid4()
+        inserted = connection.execute(
+            """
+            INSERT INTO collection_jobs (
+                profile_id, id, source_connection_id, request_key, kind
+            ) VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+            RETURNING id
+            """,
+            (profile_id, job_id, source_connection_id, request_key, kind),
+        ).fetchone()
+        if inserted is not None:
+            return self._job(connection, profile_id, inserted[0])
+
+        existing = connection.execute(
+            """
+            SELECT id, kind
+            FROM collection_jobs
+            WHERE profile_id = %s AND source_connection_id = %s
+              AND request_key = %s
+            """,
+            (profile_id, source_connection_id, request_key),
+        ).fetchone()
+        if existing is not None:
+            if existing[1] != kind:
+                raise _IdempotencyConflict(
+                    "request key already represents another collection kind"
+                )
+            return self._job(connection, profile_id, existing[0])
+
+        active = connection.execute(
+            """
+            SELECT 1
+            FROM collection_jobs
+            WHERE profile_id = %s AND source_connection_id = %s
+              AND state IN ('requested', 'running')
+            """,
+            (profile_id, source_connection_id),
+        ).fetchone()
+        if active is not None:
+            raise _IdempotencyConflict(
+                "a collection job is already active for this source"
+            )
+        raise CaptureStoreError("collection request binding failed")
+
+    @contextmanager
+    def worker_connection(self) -> Iterator[psycopg.Connection | None]:
+        """Hold the process-independent singleton worker lease.
+
+        A second adapter never mistakes work actively owned by the lease holder
+        for a stranded job. Losing the PostgreSQL connection releases the lease,
+        so a restarted adapter can recover durable requested/running work.
+        """
+        lock_key = int.from_bytes(
+            hashlib.sha256(b"garmin-coach-persistent-collection-worker").digest()[:8],
+            byteorder="big",
+            signed=True,
+        )
+        connection = psycopg.connect(self._settings.url, autocommit=True)
+        try:
+            acquired = connection.execute(
+                "SELECT pg_try_advisory_lock(%s)", (lock_key,)
             ).fetchone()
-            if source is None:
-                raise _AccessDenied("source connection is not available")
-            profile_id = source[0]
-            job_id = uuid4()
-            inserted = connection.execute(
-                """
-                INSERT INTO collection_jobs (
-                    profile_id, id, source_connection_id, request_key, kind
-                ) VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (
-                    profile_id, source_connection_id, request_key
-                ) DO NOTHING
-                RETURNING id
-                """,
-                (profile_id, job_id, source_connection_id, request_key, kind),
-            ).fetchone()
-            if inserted is None:
-                existing = connection.execute(
-                    """
-                    SELECT id, kind
-                    FROM collection_jobs
-                    WHERE profile_id = %s AND source_connection_id = %s
-                      AND request_key = %s
-                    """,
-                    (profile_id, source_connection_id, request_key),
-                ).fetchone()
-                if existing is None:
-                    raise CaptureStoreError("collection request binding failed")
-                if existing[1] != kind:
-                    raise _IdempotencyConflict(
-                        "request key already represents another collection kind"
-                    )
-                job_id = existing[0]
-            else:
-                job_id = inserted[0]
-            return self._job(connection, profile_id, job_id)
+            if acquired != (True,):
+                yield None
+                return
+            yield connection
+        finally:
+            connection.close()
+
+    @staticmethod
+    def next_pending_work(
+        connection: psycopg.Connection,
+    ) -> _PendingWork | None:
+        row = connection.execute(
+            """
+            SELECT p.clerk_issuer, p.clerk_subject,
+                   j.profile_id, j.id, j.source_connection_id, j.kind,
+                   j.state, j.safe_code, j.created_at, j.started_at,
+                   j.finished_at
+            FROM collection_jobs AS j
+            JOIN profiles AS p ON p.id = j.profile_id
+            WHERE j.state IN ('requested', 'running')
+            ORDER BY CASE WHEN j.state = 'running' THEN 0 ELSE 1 END,
+                     j.created_at, j.id
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return _PendingWork(row[0], row[1], _StoredJob(*row[2:]))
 
     def job_for_actor(
         self, issuer: str, subject: str, profile_id: UUID, job_id: UUID
@@ -235,6 +344,72 @@ class CollectionStore:
                 ),
             ).fetchone()
         return _StoredStatus(*row) if row is not None else None
+
+    def source_overview_for_actor(
+        self, issuer: str, subject: str, provider: str
+    ) -> _StoredSourceOverview | None:
+        provider = _required_text(provider, "provider")
+        with psycopg.connect(self._settings.url) as connection:
+            source = connection.execute(
+                """
+                SELECT sc.profile_id, sc.id, sc.provider, sc.state,
+                       sc.encrypted_credentials IS NOT NULL,
+                       sc.last_authenticated_at, sc.reconnect_safe_code
+                FROM source_connections AS sc
+                JOIN profiles AS p ON p.id = sc.profile_id
+                WHERE p.clerk_issuer = %s AND p.clerk_subject = %s
+                  AND sc.provider = %s
+                ORDER BY sc.created_at, sc.id
+                LIMIT 1
+                """,
+                (issuer, subject, provider),
+            ).fetchone()
+            if source is None:
+                return None
+            latest = connection.execute(
+                """
+                SELECT profile_id, id, source_connection_id, kind, state,
+                       safe_code, created_at, started_at, finished_at
+                FROM collection_jobs
+                WHERE profile_id = %s AND source_connection_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (source[0], source[1]),
+            ).fetchone()
+            statuses: dict[str, _StoredStatus] = {}
+            for domain in ("initial_sync", "incremental"):
+                row = connection.execute(
+                    """
+                    SELECT sc.state, h.outcome, h.safe_code, h.attempted_at,
+                           h.finished_at, h.last_success_at, cp.revision
+                    FROM source_connections AS sc
+                    LEFT JOIN collection_health AS h
+                      ON h.profile_id = sc.profile_id
+                     AND h.source_connection_id = sc.id
+                     AND h.domain = %s
+                    LEFT JOIN collection_checkpoints AS cp
+                      ON cp.profile_id = sc.profile_id
+                     AND cp.source_connection_id = sc.id
+                     AND cp.domain = %s
+                    WHERE sc.profile_id = %s AND sc.id = %s
+                    """,
+                    (domain, domain, source[0], source[1]),
+                ).fetchone()
+                assert row is not None
+                statuses[domain] = _StoredStatus(*row)
+        return _StoredSourceOverview(
+            profile_id=source[0],
+            source_connection_id=source[1],
+            provider=source[2],
+            state=source[3],
+            credentials_stored=source[4],
+            last_authenticated_at=source[5],
+            reconnect_safe_code=source[6],
+            latest_job=_StoredJob(*latest) if latest is not None else None,
+            initial_sync=statuses["initial_sync"],
+            incremental=statuses["incremental"],
+        )
 
     @contextmanager
     def locked_profile(self, profile_id: UUID) -> Iterator[psycopg.Connection]:

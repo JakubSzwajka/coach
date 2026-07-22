@@ -3,49 +3,54 @@
 import { useState } from "react";
 import { MetricChart } from "@/components/metric-chart";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { TimelineEntry } from "@/lib/coach-data";
+import type { TrendsProjection } from "@/lib/coach-client";
 
-type Range = "30" | "90" | "all";
+type Range = "30" | "90";
 
-const SERIES: { title: string; color: string; value: (r: TimelineEntry) => number | null }[] = [
+const SERIES = [
+  { definition: "daily_training_readiness", title: "Training readiness", color: "var(--chart-1)" },
+  { definition: "nightly_hrv_average", title: "HRV (avg)", color: "var(--chart-2)" },
+  { definition: "daily_resting_heart_rate", title: "Resting HR", color: "var(--chart-3)" },
   {
-    title: "Training readiness",
-    color: "var(--chart-1)",
-    value: (r) => r.training_readiness ?? null,
-  },
-  { title: "HRV (avg)", color: "var(--chart-2)", value: (r) => r.hrv_avg ?? null },
-  { title: "Resting HR", color: "var(--chart-3)", value: (r) => r.resting_hr ?? null },
-  {
+    definition: "daily_sleep_duration",
     title: "Sleep (hours)",
     color: "var(--chart-4)",
-    value: (r) => (r.sleep_seconds != null ? r.sleep_seconds / 3600 : null),
+    divisor: 3600,
   },
-  { title: "Avg stress", color: "var(--chart-5)", value: (r) => r.avg_stress ?? null },
-  { title: "VO₂max (running)", color: "var(--chart-1)", value: (r) => r.vo2max_running ?? null },
-];
+  { definition: "daily_average_stress", title: "Avg stress", color: "var(--chart-5)" },
+  { definition: "daily_vo2max_running", title: "VO₂max (running)", color: "var(--chart-1)" },
+] as const;
 
-export function TrendsCharts({ timeline }: { timeline: TimelineEntry[] }) {
+export function TrendsCharts({ trends }: { trends: TrendsProjection }) {
   const [range, setRange] = useState<Range>("30");
-  const rows = range === "all" ? timeline : timeline.slice(-Number(range));
 
   return (
     <div className="space-y-4">
-      <Tabs value={range} onValueChange={(v) => setRange(v as Range)}>
+      <Tabs value={range} onValueChange={(value) => setRange(value as Range)}>
         <TabsList>
           <TabsTrigger value="30">30d</TabsTrigger>
           <TabsTrigger value="90">90d</TabsTrigger>
-          <TabsTrigger value="all">All</TabsTrigger>
         </TabsList>
       </Tabs>
       <div className="grid gap-4 sm:grid-cols-2">
-        {SERIES.map((s) => (
-          <MetricChart
-            key={s.title}
-            title={s.title}
-            color={s.color}
-            data={rows.map((r) => ({ date: r.date, value: s.value(r) }))}
-          />
-        ))}
+        {SERIES.map((definition) => {
+          const series = trends.series.find((item) => item.definition === definition.definition);
+          const points = series?.points.slice(-Number(range));
+          return (
+            <MetricChart
+              key={definition.definition}
+              title={definition.title}
+              color={definition.color}
+              data={(points ?? []).map((point) => ({
+                date: point.local_date ?? point.observed_at ?? "",
+                value:
+                  typeof point.value === "number"
+                    ? point.value / ("divisor" in definition ? definition.divisor : 1)
+                    : null,
+              }))}
+            />
+          );
+        })}
       </div>
     </div>
   );

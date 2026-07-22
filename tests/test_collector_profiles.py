@@ -7,7 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from collector import run_all, store
+from collector import store
+from tests import legacy_file_run_all as run_all
 from coach.credentials import CredentialStore
 from coach.profiles import ProfileRegistry
 

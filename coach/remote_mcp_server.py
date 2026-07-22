@@ -24,17 +24,9 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .profiles import ProfileRegistry
+from .application import ClerkActor
+from .application_adapter import reset_current_actor, set_current_actor
 from .mcp_server import (
-    activate_training_plan,
-    adjust_training_plan,
-    archive_training_plan,
-    create_goal_event,
-    create_training_plan,
-    create_training_session,
-    delete_goal_event,
-    delete_training_plan,
-    delete_training_session,
     get_goal_event,
     get_training_plan,
     get_training_plan_history,
@@ -43,11 +35,6 @@ from .mcp_server import (
     list_training_plans,
     list_training_sessions,
     read_coaching_context,
-    replace_goal_event,
-    replace_training_session,
-    reset_current_profile_root,
-    set_current_profile_root,
-    set_planned_session_fulfilment,
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -57,27 +44,18 @@ def load_project_env(path: Path | None = None) -> None:
     """Load project configuration without overriding explicit environment values."""
     load_dotenv(path or (_PROJECT_ROOT / ".env"), override=False)
 
+# Hosted MCP is intentionally read-only.  App Record writes remain available
+# on the local 20-tool registry, where revision checks are enforced by the
+# same CoachApplication command boundary.
 _REMOTE_TOOLS = (
     read_coaching_context,
-    create_training_session,
     list_training_sessions,
     get_training_session,
-    replace_training_session,
-    delete_training_session,
-    create_goal_event,
     list_goal_events,
     get_goal_event,
-    replace_goal_event,
-    delete_goal_event,
-    create_training_plan,
     get_training_plan,
     list_training_plans,
     get_training_plan_history,
-    activate_training_plan,
-    archive_training_plan,
-    delete_training_plan,
-    adjust_training_plan,
-    set_planned_session_fulfilment,
 )
 
 _AUDIT_LOGGER = logging.getLogger("garmin_coach.remote_audit")
@@ -391,21 +369,17 @@ def _audited_tool(tool: Callable[..., Any], issuer_url: str) -> Callable[..., An
             else "missing"
         )
         decision = "allowed"
-        base = Path(os.environ.get("GARMIN_COACH_DATA_DIR", "data"))
-        profile_token = None
+        actor_token = None
         if subject:
-            registry = ProfileRegistry(base)
-            profile = registry.bind(subject)
-            root = registry.data_root(profile.id)
-            profile_token = set_current_profile_root(root)
+            actor_token = set_current_actor(ClerkActor(issuer_url, subject))
         try:
             return tool(*args, **kwargs)
         except Exception:
             decision = "error"
             raise
         finally:
-            if profile_token is not None:
-                reset_current_profile_root(profile_token)
+            if actor_token is not None:
+                reset_current_actor(actor_token)
             latency_ms = round((time.monotonic() - started) * 1000)
             _AUDIT_LOGGER.info(
                 "remote_tool tool=%s decision=%s subject=%s latency_ms=%d",

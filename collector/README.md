@@ -1,134 +1,38 @@
 # Garmin collector
 
-Pulls Garmin Connect data on a daily/on-demand basis.
+The runtime collector reads Garmin and writes only through
+`CoachApplication.ingest/execute`. PostgreSQL owns immutable parsed captures,
+canonical Training Sessions and observations, durable jobs/checkpoints/health,
+and encrypted credential/token bundles. There is no raw/derived file write,
+dual-write, cursor file, health file, log file, or file fallback.
 
-> **Pre-cutover implementation:** this document describes the current file
-> runtime. M1 moves source captures, canonical records, projections, and
-> operational state to PostgreSQL through `CoachApplication.ingest`; files will
-> not remain a second authority or receive dual-writes. See
-> [`ADR-0004`](../docs/adr/0004-postgresql-durable-runtime-authority.md).
+`collector/postgres_adapter.py` keeps provider responses in memory and returns a
+`CollectedBatch`. The application binds the job-owned opaque source capability,
+atomically ingests that batch, and advances job health/checkpoint state.
+`garminconnect` token files exist only in the private temporary directory issued
+by `CoachApplication`; encrypted rotated tokens are persisted immediately and
+the directory is removed on success or failure.
 
-## Current file layers
-
-- **`data/raw/`** — parsed endpoint snapshots returned by `garminconnect`.
-  Repeated pulls may replace the same endpoint/date path, so existing files do
-  not prove append-only history or original HTTP-byte fidelity.
-- **`data/derived/`** — regenerable, compact, coach-friendly training records.
-- **`data/index/state.json`** — cursors: seen activity ids, last snapshot, last run.
-- **`data/index/collector-health.json`** — machine-readable outcomes and freshness.
-- **`data/logs/`** — per-day run logs.
-
-```
-data/
-  raw/
-    daily/2026/07/2026-07-18/{stats,sleep,hrv,rhr,stress,body_battery,
-                              steps,floors,intensity_minutes,respiration,
-                              spo2,training_readiness,training_status,
-                              max_metrics,hydration,user_summary}.json
-    activities/2026/07/<activity_id>/{list_summary,summary,details,splits,
-                                      hr_zones,weather,exercise_sets}.json
-    plans/2026-07-18/{scheduled_workouts,workouts,training_plans}.json
-    profile/2026-07-18/{user_profile,settings,unit_system,full_name,devices,
-                        device_last_used,personal_records,goals_active,
-                        race_predictions}.json
-  derived/
-    athlete.json                 # name, gender, weight, VO2max, thresholds,
-                                 # available/preferred training days
-    daily/2026-07-18.json        # one compact record per day
-    activities/<activity_id>.json
-    timeline.jsonl               # append-only daily rollups, one line per day
-  index/state.json
-  index/collector-health.json    # schema-versioned run/domain/date health
-  logs/collector-2026-07-18.log
-```
-
-## Run
+The supported operator path is the signed-in **Connect Garmin** / **Refresh
+Garmin** flow in the one Docker Compose stack documented in the root README.
+The direct CLI is for an explicitly configured deployment actor:
 
 ```bash
-python -m collector.collect                 # yesterday + today + new activities
-python -m collector.collect --days 30       # backfill last 30 days
-python -m collector.collect --date 2026-07-10
-python -m collector.collect --weekly        # also refresh profile snapshot
-python -m collector.collect --no-activities
+GARMIN_COACH_DATABASE_URL='postgresql://coach:<app-password>@127.0.0.1:5432/coach' \
+GARMIN_COACH_LOCAL_ACTOR_ISSUER='https://local.example.test' \
+GARMIN_COACH_LOCAL_ACTOR_SUBJECT='local-owner-placeholder' \
+GARMIN_COACH_ENCRYPTION_KEY='<fernet-key>' \
+GARMIN_EMAIL='you@example.com' \
+GARMIN_PASSWORD='<garmin-password>' \
+python -m collector.collect --days 30 --reconnect
 ```
 
-## Machine-readable collection health
+Incremental jobs use cached encrypted tokens and omit Garmin credentials. Garmin
+remains read-only. Repairable authentication or MFA transitions the source to
+`needs_reconnect`; provider/rate-limit failures preserve prior successful data
+and freshness rather than advancing a checkpoint.
 
-`data/index/collector-health.json` is the stable downstream health seam
-(`schema_version: 1`). It is atomically replaced at run start, domain/date
-attempts, domain completion, and run completion, so an interrupted process
-remains visibly `attempted`.
-
-- Outcomes are `not_attempted`, `attempted`, `successful`, `degraded`, or
-  `failed`.
-- Run and domain records expose UTC RFC 3339 `attempted_at`, `finished_at`, and
-  carried `last_success_at` timestamps. Freshness advances only after a fully
-  successful run/domain/date, not after a degraded attempt.
-- Daily records are keyed by ISO date and expose the `stats` anchor outcome,
-  every endpoint outcome, and whether this run wrote the `_complete` marker.
-- Activities expose the list outcome, latest-page-independent pending-retry
-  count, aggregate detail-call outcomes, preserved detail-file count,
-  summary-anchor completion counts, and cursor advances without activity
-  identifiers. Profile snapshots expose per-endpoint and
-  required-anchor outcomes, preserved-file counts, and whether the cursor
-  advanced. Skipped activities or a profile that is not due remain
-  `not_attempted`.
-- All attempted domains successful means the run is `successful`; all failed
-  means `failed`; mixed or partial outcomes mean `degraded`. A fatal collector
-  exception records `failed` and is still re-raised.
-
-Endpoint failures may still let the collector return zero after preserving
-successful files. Existing raw/derived files remain readable and are never
-deleted by health reporting. `state.last_run`, a log `done` line, `_complete`
-file presence, and raw file presence are not success signals; consume the
-health contract instead. Exception messages and Collected Record identifiers
-are intentionally excluded.
-
-## Cadence
-
-| What | When |
-|---|---|
-| Daily wellness + training state (16 metrics) | every run, for yesterday and today |
-| Plans / scheduled workouts | every run |
-| New activities + details | every run; `seen_activities` advances only after the `summary` anchor exists |
-| Profile snapshot + `athlete.json` | every 7 days, or `--weekly`; `last_snapshot` advances only after `user_profile`, `full_name`, and `personal_records` exist |
-
-## Cron
-
-`collector/run.sh` resolves the repo path and activates the venv, so cron's
-minimal environment works. Run twice a day to catch morning readiness and
-evening activities:
-
-```cron
-# finalize yesterday + morning readiness
-30 6 * * *  /path/to/garmin-coach/collector/run.sh >> /tmp/garmin-coach.log 2>&1
-# pick up the day's activities
-0 21 * * *  /path/to/garmin-coach/collector/run.sh >> /tmp/garmin-coach.log 2>&1
-```
-
-## Design notes
-
-- Credential login is rare and rate-limited (Garmin 429s the mobile strategy).
-  Tokens are cached in `~/.garminconnect`; runs resume from cache in ~1–2 s and
-  avoid that path. The client backs off on 429.
-- Every endpoint call is wrapped: an unsupported metric records a skip and the
-  run continues. Add a metric by adding one line in `endpoints.py`.
-- Activity details and same-date profile endpoints already written successfully
-  are reused on retry. A failed activity summary remains discoverable from its
-  preserved list summary even after leaving the bounded latest-activities page;
-  it and any missing required profile anchor leave their cursor unchanged so
-  the next run retries only missing files.
-- Derived files are disposable in the pre-cutover runtime and can be rebuilt
-  from the source snapshots still present. The importer must not invent source
-  history that those paths have already overwritten.
-- Uses only `garminconnect` + `curl_cffi`; `.env` loading and JSON store are
-  dependency-free.
-
-## Current pre-cutover coach input
-
-The file-backed coach reads `data/derived/` today. The target coach consumes
-stable `CoachApplication.read` projections instead:
-- `athlete.json` — who they are, thresholds, when they can train.
-- `timeline.jsonl` — scan trends (readiness, HRV, sleep, load) fast.
-- `daily/<date>.json` — a specific day in detail.
-- `activities/<id>.json` — a specific session.
+Test-only frozen file adapters under `tests/legacy_file_*` keep historical
+portable behavior contracts executable. No producer or consumer entry point
+imports them. Frozen private files remain owner-gated migration/rollback inputs,
+not runtime state.

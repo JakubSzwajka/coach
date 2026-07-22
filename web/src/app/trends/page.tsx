@@ -1,15 +1,11 @@
-import { NoProfile } from "@/components/no-profile";
 import { TrendsCharts } from "@/components/trends-charts";
 import { Card, CardContent } from "@/components/ui/card";
-import { readTimeline } from "@/lib/coach-data";
-import { currentProfileRoot } from "@/lib/profile";
+import { getTrends } from "@/lib/coach-client";
 
 export const dynamic = "force-dynamic";
 
 export default async function TrendsPage() {
-  const root = await currentProfileRoot();
-  if (!root) return <NoProfile />;
-  const timeline = await readTimeline(root);
+  const trends = await getTrends();
 
   return (
     <div className="space-y-6">
@@ -19,14 +15,14 @@ export default async function TrendsPage() {
           Daily wellness and training signals over time.
         </p>
       </div>
-      {timeline.length === 0 ? (
+      {!trends || trends.series.length === 0 ? (
         <Card>
           <CardContent className="text-muted-foreground py-8 text-sm">
-            No timeline data. Run the collector and reload.
+            No trend data. Connect Garmin or refresh the collector and reload.
           </CardContent>
         </Card>
       ) : (
-        <TrendsCharts timeline={timeline} />
+        <TrendsCharts trends={trends} />
       )}
     </div>
   );

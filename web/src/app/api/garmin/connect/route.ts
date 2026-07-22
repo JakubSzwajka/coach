@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-import { GarminJobConflict, startGarminJob } from "@/lib/garmin-jobs";
+import { CoachClientError, connectGarmin } from "@/lib/coach-client";
 
 export const runtime = "nodejs";
 
@@ -36,12 +36,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    await startGarminJob(userId, { action: "connect", email, password, days: Number(days) });
-    return NextResponse.json({ state: "starting" }, { status: 202 });
+    await connectGarmin(email, password, Number(days));
+    return NextResponse.json({ state: "requested" }, { status: 202 });
   } catch (error) {
-    if (error instanceof GarminJobConflict) {
-      return NextResponse.json({ error: "job_running" }, { status: 409 });
+    if (error instanceof CoachClientError) {
+      return NextResponse.json({ error: error.code }, { status: error.status });
     }
-    return NextResponse.json({ error: "job_unavailable" }, { status: 503 });
+    return NextResponse.json({ error: "application_unavailable" }, { status: 503 });
   }
 }

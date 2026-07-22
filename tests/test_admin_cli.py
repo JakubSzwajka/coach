@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from coach import admin_cli
+from tests import legacy_file_admin_cli as admin_cli
 from coach.credentials import CredentialStore
 from coach.profiles import ProfileRegistry
-from collector import run_all
+from tests import legacy_file_run_all as run_all
 
 
 class AdminCliTest(unittest.TestCase):

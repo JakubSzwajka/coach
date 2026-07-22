@@ -3,42 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import os
-from contextvars import ContextVar, Token
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import StrictInt
 
-from .data import CoachData, ContextWindow
+from .application_adapter import ContextWindow, current_application_adapter
 
 server = FastMCP("garmin-coach")
 
-# Request-scoped per-profile data root. The remote (Clerk-authenticated) server
-# sets this per request after resolving subject -> profile; the local stdio
-# server leaves it unset and operates on the flat owner root.
-_PROFILE_ROOT: ContextVar[Path | None] = ContextVar(
-    "garmin_coach_profile_root", default=None
-)
 
-
-def set_current_profile_root(root: Path | None) -> Token[Path | None]:
-    """Bind the data root for the current request; returns a reset token."""
-    return _PROFILE_ROOT.set(root)
-
-
-def reset_current_profile_root(token: Token[Path | None]) -> None:
-    """Restore the profile root to its previous value."""
-    _PROFILE_ROOT.reset(token)
-
-
-def _coach() -> CoachData:
-    root = _PROFILE_ROOT.get()
-    if root is None:
-        root = Path(os.environ.get("GARMIN_COACH_DATA_DIR", "data"))
-    return CoachData(root)
+def _coach():
+    """Return the request-scoped PostgreSQL application adapter."""
+    return current_application_adapter()
 
 
 def _parse_end_date(end_date: str | None) -> date | None:

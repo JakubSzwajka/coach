@@ -1,17 +1,81 @@
+name: garmin-coach
+
 services:
+  postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: ${GARMIN_COACH_POSTGRES_DB:-coach}
+      POSTGRES_USER: ${GARMIN_COACH_POSTGRES_ADMIN_USER:-coach_admin}
+      POSTGRES_PASSWORD: ${GARMIN_COACH_POSTGRES_ADMIN_PASSWORD:?set GARMIN_COACH_POSTGRES_ADMIN_PASSWORD}
+      GARMIN_COACH_POSTGRES_APP_USER: ${GARMIN_COACH_POSTGRES_APP_USER:-coach}
+      GARMIN_COACH_POSTGRES_APP_PASSWORD: ${GARMIN_COACH_POSTGRES_APP_PASSWORD:?set GARMIN_COACH_POSTGRES_APP_PASSWORD}
+    ports:
+      - "127.0.0.1:${GARMIN_COACH_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-garmin-coach-roles.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - PGPASSWORD="$${GARMIN_COACH_POSTGRES_APP_PASSWORD}" psql --host 127.0.0.1 --username "$${GARMIN_COACH_POSTGRES_APP_USER}" --dbname "$${POSTGRES_DB}" --no-psqlrc --command 'SELECT 1' >/dev/null
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    command: ["python", "-m", "coach.postgres.migrate", "upgrade"]
+    environment:
+      GARMIN_COACH_DISABLE_DOTENV: "1"
+      GARMIN_COACH_MIGRATION_DATABASE_URL: ${GARMIN_COACH_MIGRATION_DATABASE_URL:?set GARMIN_COACH_MIGRATION_DATABASE_URL with host postgres}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    environment:
+      GARMIN_COACH_DISABLE_DOTENV: "1"
+      GARMIN_COACH_DATABASE_URL: ${GARMIN_COACH_DATABASE_URL:?set GARMIN_COACH_DATABASE_URL with host postgres}
+      GARMIN_COACH_CLERK_ISSUER: ${GARMIN_COACH_CLERK_ISSUER:?set GARMIN_COACH_CLERK_ISSUER}
+      GARMIN_COACH_HTTP_SERVICE_TOKEN: ${GARMIN_COACH_HTTP_SERVICE_TOKEN:?set GARMIN_COACH_HTTP_SERVICE_TOKEN}
+      GARMIN_COACH_ENCRYPTION_KEY: ${GARMIN_COACH_ENCRYPTION_KEY:?set GARMIN_COACH_ENCRYPTION_KEY}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
   web:
     build:
       context: .
       dockerfile: web/Dockerfile
     ports:
       - "3000:3000"
-    # Clerk keys (and any overrides) come from web/.env; copy web/.env.example.
     env_file:
       - path: ./web/.env
         required: false
     environment:
-      GARMIN_COACH_DATA_DIR: /data
-    # The combined Node+Python process reads and updates the per-profile store.
-    volumes:
-      - ./data:/data
+      GARMIN_COACH_HTTP_URL: http://adapter:8080
+      GARMIN_COACH_HTTP_SERVICE_TOKEN: ${GARMIN_COACH_HTTP_SERVICE_TOKEN:?set GARMIN_COACH_HTTP_SERVICE_TOKEN}
+    depends_on:
+      adapter:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  postgres-data:

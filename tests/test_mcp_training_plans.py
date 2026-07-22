@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import patch
+
+from tests.legacy_mcp import legacy_mcp_adapter
 
 from coach.data import InvalidRecord, ReferencedRecord, RevisionConflict
 from coach.mcp_server import (
@@ -33,9 +33,7 @@ def _d(offset: int) -> str:
 class McpTrainingPlanToolsTest(unittest.TestCase):
     def test_full_plan_lifecycle_through_configured_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 created = create_training_plan(
                     name="Autumn build",
                     starts_on=_d(0),
@@ -105,9 +103,7 @@ class McpTrainingPlanToolsTest(unittest.TestCase):
 
     def test_matching_and_frozen_history_through_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 plan = create_training_plan(
                     name="Match plan",
                     starts_on=_d(0),
@@ -160,9 +156,7 @@ class McpTrainingPlanToolsTest(unittest.TestCase):
 
     def test_second_active_plan_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 first = create_training_plan(
                     name="First", starts_on=_d(0), ends_on=_d(30), reason="a"
                 )
@@ -175,9 +169,7 @@ class McpTrainingPlanToolsTest(unittest.TestCase):
 
     def test_referenced_goal_event_cannot_be_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 event = create_goal_event(
                     name="Target race",
                     local_date=_d(80),
@@ -201,9 +193,7 @@ class McpTrainingPlanToolsTest(unittest.TestCase):
 
     def test_stale_revision_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 created = create_training_plan(
                     name="Rev", starts_on=_d(0), ends_on=_d(30), reason="init"
                 )

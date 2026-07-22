@@ -1030,6 +1030,36 @@ class IngestionAndCollectionPostgreSQLTest(unittest.TestCase):
                     (json.dumps({"upstream_exception": "must not persist"}),),
                 )
 
+    def test_concurrent_duplicate_requests_admit_one_active_job_transactionally(self) -> None:
+        _profile, source = self._profile_source(tokens=True)
+        barrier = threading.Barrier(12)
+
+        def request(index: int):
+            barrier.wait(timeout=5)
+            try:
+                return self.application.execute(
+                    self.actor_a,
+                    RequestCollection(source, f"concurrent-request-{index}"),
+                )
+            except Conflict:
+                return None
+
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            results = list(executor.map(request, range(12)))
+        admitted = [result for result in results if result is not None]
+        self.assertEqual(len(admitted), 1)
+        with psycopg.connect(self.database_url) as connection:
+            rows = connection.execute(
+                "SELECT id, state, created_at FROM collection_jobs "
+                "ORDER BY created_at, id"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], "requested")
+        overview = self.application.read(
+            self.actor_a, GetCollectionJob(admitted[0].job)
+        )
+        self.assertEqual((overview.state, overview.created_at), ("requested", rows[0][2]))
+
     def test_credential_only_initial_auth_and_stale_token_fallback_are_bounded(self) -> None:
         _profile, source = self._profile_source(tokens=False)
         external = _ExternalCollection(
@@ -1692,7 +1722,7 @@ class IngestionAndCollectionPostgreSQLTest(unittest.TestCase):
             ("failed", "worker_lost", "failed", "worker_lost", "failed", "worker_lost"),
         )
 
-    def test_stranded_job_recovery_does_not_overwrite_newer_success(self) -> None:
+    def test_stranded_job_blocks_successor_until_recovered(self) -> None:
         _profile, source = self._profile_source(tokens=True)
         crashing_adapter = SyntheticAdapter(
             _ExternalCollection(
@@ -1714,157 +1744,31 @@ class IngestionAndCollectionPostgreSQLTest(unittest.TestCase):
         )
         with self.assertRaises(ApplicationUnavailable):
             crashing.execute(self.actor_a, RunCollectionJob(job_a.job))
-        self.assertEqual(
-            crashing.read(self.actor_a, GetCollectionJob(job_a.job)).state,
-            "running",
-        )
-        self.assertEqual(
-            crashing.read(self.actor_a, GetSourceStatus(source)).outcome,
-            "running",
-        )
-        with psycopg.connect(self.database_url) as connection:
-            stranded_evidence = connection.execute(
-                """
-                SELECT j.state, r.state, a.state, h.outcome
-                FROM collection_jobs AS j
-                JOIN collection_runs AS r
-                  ON r.profile_id = j.profile_id AND r.job_id = j.id
-                JOIN collection_attempts AS a
-                  ON a.profile_id = r.profile_id AND a.run_id = r.id
-                JOIN collection_health AS h
-                  ON h.profile_id = j.profile_id
-                 AND h.source_connection_id = j.source_connection_id
-                 AND h.domain = j.kind
-                WHERE j.request_key = 'stranded-job-a'
-                """
-            ).fetchone()
-        self.assertEqual(stranded_evidence, ("running",) * 4)
-
-        success_adapter = SyntheticAdapter(
-            _ExternalCollection(
-                self._batch(
-                    source,
-                    key="successful-b-capture",
-                    payload_value=2,
-                    duration=1500,
-                    heart_rate=48,
-                ),
-                CollectionCheckpoint("initial_sync", {"page": 2}),
+        with self.assertRaises(Conflict):
+            crashing.execute(
+                self.actor_a, RequestCollection(source, "blocked-successor")
             )
-        )
-        successful = CoachApplication(
-            self.settings,
-            collection_adapter=success_adapter,
-            encryption_key=self.key,
-            temporary_root=Path(self.enterContext(TemporaryDirectory())),
-        )
-        job_b = successful.execute(
-            self.actor_a, RequestCollection(source, "successful-job-b")
-        )
-        completed_b = successful.execute(
-            self.actor_a, RunCollectionJob(job_b.job)
-        )
-        before_retry = successful.read(
-            self.actor_a, GetSourceStatus(source)
-        )
-        with psycopg.connect(self.database_url) as connection:
-            checkpoint_before = connection.execute(
-                """
-                SELECT cursor, revision, updated_at, last_success_at
-                FROM collection_checkpoints
-                """
-            ).fetchone()
 
-        retry_adapter = SyntheticAdapter(crashing_adapter.external)
-        retrying_a = CoachApplication(
+        recovery = CoachApplication(
             self.settings,
-            collection_adapter=retry_adapter,
+            collection_adapter=SyntheticAdapter(crashing_adapter.external),
             encryption_key=self.key,
             temporary_root=Path(self.enterContext(TemporaryDirectory())),
         )
-        recovered_a = retrying_a.execute(
-            self.actor_a, RunCollectionJob(job_a.job)
+        recovered = recovery.execute(self.actor_a, RunCollectionJob(job_a.job))
+        successor = recovery.execute(
+            self.actor_a, RequestCollection(source, "accepted-after-recovery")
         )
-        after_retry = retrying_a.read(
-            self.actor_a, GetSourceStatus(source)
+        self.assertEqual(
+            (recovered.state, recovered.safe_code), ("failed", "worker_lost")
         )
+        self.assertEqual(successor.state, "requested")
         with psycopg.connect(self.database_url) as connection:
-            checkpoint_after = connection.execute(
-                """
-                SELECT cursor, revision, updated_at, last_success_at
-                FROM collection_checkpoints
-                """
-            ).fetchone()
-            evidence = connection.execute(
-                """
-                SELECT j.request_key, j.state, j.safe_code,
-                       r.state, r.safe_code, a.state, a.safe_code
-                FROM collection_jobs AS j
-                JOIN collection_runs AS r
-                  ON r.profile_id = j.profile_id AND r.job_id = j.id
-                JOIN collection_attempts AS a
-                  ON a.profile_id = r.profile_id AND a.run_id = r.id
-                ORDER BY j.request_key
-                """
+            active = connection.execute(
+                "SELECT request_key, state FROM collection_jobs "
+                "WHERE state IN ('requested', 'running')"
             ).fetchall()
-
-        self.assertEqual(completed_b.state, "succeeded")
-        self.assertEqual(
-            (recovered_a.state, recovered_a.safe_code),
-            ("failed", "worker_lost"),
-        )
-        self.assertEqual(
-            (
-                after_retry.state,
-                after_retry.outcome,
-                after_retry.safe_code,
-                after_retry.attempted_at,
-                after_retry.finished_at,
-                after_retry.last_success_at,
-                after_retry.checkpoint_revision,
-            ),
-            (
-                before_retry.state,
-                before_retry.outcome,
-                before_retry.safe_code,
-                before_retry.attempted_at,
-                before_retry.finished_at,
-                before_retry.last_success_at,
-                before_retry.checkpoint_revision,
-            ),
-        )
-        self.assertEqual(
-            (after_retry.outcome, after_retry.safe_code),
-            ("successful", None),
-        )
-        self.assertEqual(checkpoint_before, checkpoint_after)
-        self.assertEqual(checkpoint_after[0], {"page": 2})
-        self.assertEqual(
-            evidence,
-            [
-                (
-                    "stranded-job-a",
-                    "failed",
-                    "worker_lost",
-                    "failed",
-                    "worker_lost",
-                    "failed",
-                    "worker_lost",
-                ),
-                (
-                    "successful-job-b",
-                    "succeeded",
-                    None,
-                    "succeeded",
-                    None,
-                    "succeeded",
-                    None,
-                ),
-            ],
-        )
-        self.assertEqual(retry_adapter.paths, [])
-        self.assertEqual(retry_adapter.cached_flags, [])
-        self.assertEqual(retry_adapter.credentials, [])
+        self.assertEqual(active, [("accepted-after-recovery", "requested")])
 
     def test_failure_after_success_does_not_advance_checkpoint_or_freshness(self) -> None:
         _profile, source = self._profile_source(tokens=True)

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+
+from tests.legacy_mcp import legacy_mcp_adapter
 
 from coach.mcp_server import read_coaching_context
 
@@ -24,9 +24,7 @@ class McpServerTest(unittest.TestCase):
             )
             self._write_json(root / "derived" / "activities.json", [])
 
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": str(root)}, clear=False
-            ):
+            with legacy_mcp_adapter(root):
                 result = read_coaching_context(days=2, end_date="2026-07-18")
 
             self.assertEqual(

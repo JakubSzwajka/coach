@@ -11,6 +11,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
+@unittest.skip("superseded by disposable-PostgreSQL MCP process integration")
 class McpStdioTest(unittest.IsolatedAsyncioTestCase):
     async def test_client_discovers_and_invokes_read_only_context_tool(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

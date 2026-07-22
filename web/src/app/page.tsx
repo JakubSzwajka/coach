@@ -10,30 +10,36 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { loadOverview } from "@/lib/coach-data";
+import { getDashboard } from "@/lib/coach-client";
 import { fmtHoursMin, fmtInt, fmtKm, fmtNum, fmtShortDate } from "@/lib/format";
-import { currentProfileRoot } from "@/lib/profile";
 
-// Data is read from files at request time so the dashboard reflects the latest
-// collector run without a rebuild.
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const root = await currentProfileRoot();
-  if (!root) return <NoProfile />;
-  const { athlete, timeline, activities } = await loadOverview(root);
-  const latest = timeline.at(-1);
-  const recent = activities.slice(0, 5);
+  const dashboard = await getDashboard();
+  if (!dashboard) return <NoProfile />;
+  const latest = Object.fromEntries(
+    dashboard.latest_observations.map((item) => [item.definition, item]),
+  );
+  const value = (definition: string) => latest[definition]?.value;
+  const numeric = (definition: string) => {
+    const candidate = value(definition);
+    return typeof candidate === "number" ? candidate : undefined;
+  };
+  const text = (definition: string) => {
+    const candidate = value(definition);
+    return typeof candidate === "string" ? candidate : undefined;
+  };
+  const recent = dashboard.recent_sessions;
 
-  if (!latest && !athlete) {
+  if (dashboard.collection_health.records === 0 && !dashboard.display_name) {
     return (
       <Card>
         <CardHeader>
           <CardTitle>No data yet</CardTitle>
         </CardHeader>
         <CardContent className="text-muted-foreground text-sm">
-          Nothing under <code className="text-foreground">derived/</code>. Run the collector (
-          <code className="text-foreground">python -m collector.collect</code>) and reload.
+          Connect Garmin to start the first PostgreSQL-backed sync, then reload.
         </CardContent>
       </Card>
     );
@@ -44,18 +50,16 @@ export default async function DashboardPage() {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            {athlete?.full_name ?? "Athlete"}
+            {dashboard.display_name ?? "Athlete"}
           </h1>
           <p className="text-muted-foreground text-sm">
-            Latest data {fmtShortDate(latest?.date)}
-            {athlete?.snapshot_date
-              ? ` · profile as of ${fmtShortDate(athlete.snapshot_date)}`
-              : ""}
+            Latest data{" "}
+            {fmtShortDate(dashboard.collection_health.latest_observation_date ?? undefined)}
           </p>
         </div>
-        {latest?.training_readiness_level ? (
+        {text("daily_training_readiness_level") ? (
           <Badge variant="secondary" className="text-xs">
-            Readiness {latest.training_readiness_level}
+            Readiness {text("daily_training_readiness_level")}
           </Badge>
         ) : null}
       </div>
@@ -63,28 +67,36 @@ export default async function DashboardPage() {
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatCard
           label="Training readiness"
-          value={fmtInt(latest?.training_readiness)}
-          hint={latest?.training_readiness_level ?? undefined}
+          value={fmtInt(numeric("daily_training_readiness"))}
+          hint={text("daily_training_readiness_level")}
         />
-        <StatCard label="Resting HR" value={fmtInt(latest?.resting_hr)} hint="bpm" />
+        <StatCard
+          label="Resting HR"
+          value={fmtInt(numeric("daily_resting_heart_rate"))}
+          hint="bpm"
+        />
         <StatCard
           label="HRV"
-          value={fmtInt(latest?.hrv_avg)}
-          hint={latest?.hrv_status && latest.hrv_status !== "NONE" ? latest.hrv_status : "ms"}
+          value={fmtInt(numeric("nightly_hrv_average"))}
+          hint={text("daily_hrv_status") ?? "ms"}
         />
         <StatCard
           label="Sleep"
-          value={fmtHoursMin(latest?.sleep_seconds)}
-          hint={latest?.sleep_score != null ? `score ${latest.sleep_score}` : undefined}
+          value={fmtHoursMin(numeric("daily_sleep_duration"))}
+          hint={
+            numeric("daily_sleep_score") != null
+              ? `score ${numeric("daily_sleep_score")}`
+              : undefined
+          }
         />
         <StatCard
           label="Body battery"
-          value={fmtInt(latest?.body_battery_charged)}
+          value={fmtInt(numeric("daily_body_battery_charged"))}
           hint="charged"
         />
-        <StatCard label="Avg stress" value={fmtInt(latest?.avg_stress)} />
-        <StatCard label="VO₂max (run)" value={fmtNum(latest?.vo2max_running)} />
-        <StatCard label="Steps" value={fmtInt(latest?.steps)} />
+        <StatCard label="Avg stress" value={fmtInt(numeric("daily_average_stress"))} />
+        <StatCard label="VO₂max (run)" value={fmtNum(numeric("daily_vo2max_running"))} />
+        <StatCard label="Steps" value={fmtInt(numeric("daily_steps"))} />
       </div>
 
       <section className="space-y-3">
@@ -105,22 +117,24 @@ export default async function DashboardPage() {
               </TableHeader>
               <TableBody>
                 {recent.map((a) => (
-                  <TableRow key={String(a.activity_id)}>
+                  <TableRow key={a.id}>
                     <TableCell className="whitespace-nowrap">
-                      {fmtShortDate(a.start_local)}
+                      {fmtShortDate(a.local_start ?? a.local_date)}
                     </TableCell>
-                    <TableCell className="max-w-[280px] truncate font-medium">{a.name}</TableCell>
+                    <TableCell className="max-w-[280px] truncate font-medium">{a.title}</TableCell>
                     <TableCell>
-                      {a.type ? (
+                      {a.sport ? (
                         <Badge variant="outline" className="capitalize">
-                          {a.type}
+                          {a.sport}
                         </Badge>
                       ) : (
                         "—"
                       )}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">{fmtKm(a.distance_m)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{fmtInt(a.avg_hr)}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {fmtKm(a.distance?.unit === "metres" ? a.distance.value : undefined)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">—</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

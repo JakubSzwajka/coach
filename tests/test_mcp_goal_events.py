@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+
+from tests.legacy_mcp import legacy_mcp_adapter
 
 from coach.data import InvalidRecord, ReadOnlyRecord, RevisionConflict
 from coach.mcp_server import (
@@ -19,9 +19,7 @@ from coach.mcp_server import (
 class McpGoalEventToolsTest(unittest.TestCase):
     def test_full_lifecycle_through_configured_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 created = create_goal_event(
                     name="Autumn City Marathon",
                     local_date="2026-10-11",
@@ -88,9 +86,7 @@ class McpGoalEventToolsTest(unittest.TestCase):
 
     def test_invalid_priority_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 with self.assertRaises(InvalidRecord):
                     create_goal_event(
                         name="Club B race",
@@ -101,9 +97,7 @@ class McpGoalEventToolsTest(unittest.TestCase):
 
     def test_garmin_ids_cannot_be_mutated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 with self.assertRaises(ReadOnlyRecord):
                     replace_goal_event(
                         goal_event_id="garmin:123",

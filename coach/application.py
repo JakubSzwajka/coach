@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence, Union, overload
@@ -94,6 +95,21 @@ class ClerkActor:
 
     def __repr__(self) -> str:
         return "ClerkActor(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _ServiceActor:
+    """Opaque non-Profile actor for an application-owned service command."""
+
+    def __init__(self) -> None:
+        raise TypeError("service actors are issued by CoachApplication")
+
+    @classmethod
+    def _create(cls) -> "_ServiceActor":
+        return object.__new__(cls)
+
+    def __repr__(self) -> str:
+        return "_ServiceActor(<internal>)"
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -286,6 +302,24 @@ class SourceStatusView:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceConnectionStatusView:
+    provider: str
+    state: str
+    credentials_stored: bool
+    last_authenticated_at: datetime | None = field(repr=False)
+    reconnect_safe_code: str | None
+    latest_job: CollectionJobView | None = field(repr=False)
+    initial_sync: SourceStatusView = field(repr=False)
+    incremental: SourceStatusView = field(repr=False)
+
+    def __repr__(self) -> str:
+        return (
+            "SourceConnectionStatusView("
+            f"provider={self.provider!r}, state={self.state!r}, <redacted>)"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GetProfile:
     pass
 
@@ -314,6 +348,11 @@ class GetCollectionJob:
 class GetSourceStatus:
     source: SourceConnectionRef
     domain: str = "initial_sync"
+
+
+@dataclass(frozen=True, slots=True)
+class GetSourceConnectionStatus:
+    provider: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -697,6 +736,7 @@ Query = Union[
     GetCollectedRecord,
     GetCollectionJob,
     GetSourceStatus,
+    GetSourceConnectionStatus,
     GetTrainingSession,
     ListTrainingSessions,
     GetSessionAnnotation,
@@ -718,6 +758,7 @@ ReadResult = Union[
     CollectedRecordView,
     CollectionJobView,
     SourceStatusView,
+    SourceConnectionStatusView,
     TrainingSessionRecordView,
     TrainingSessionRecordsView,
     SessionAnnotationView,
@@ -778,6 +819,17 @@ class ConfigureSourceCredentials:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfigureSourceCredentialsAndRequestCollection:
+    source: SourceConnectionRef = field(repr=False)
+    credentials: SecretBundle = field(repr=False)
+    request_key: str = field(repr=False)
+    kind: str = "initial_sync"
+
+    def __repr__(self) -> str:
+        return "ConfigureSourceCredentialsAndRequestCollection(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
 class RequestCollection:
     source: SourceConnectionRef
     request_key: str = field(repr=False)
@@ -787,6 +839,21 @@ class RequestCollection:
 @dataclass(frozen=True, slots=True)
 class RunCollectionJob:
     job: CollectionJobRef
+
+
+@dataclass(frozen=True, slots=True)
+class _RunNextPendingCollection:
+    """Internal command for one process-independent worker pass."""
+
+
+@dataclass(frozen=True, slots=True)
+class _RunNextPendingCollectionResult:
+    """Capability-free result safe for the service worker to inspect."""
+
+    work_found: bool
+
+
+_COLLECTION_WORKER_ACTOR = _ServiceActor._create()
 
 
 @dataclass(frozen=True, slots=True)
@@ -909,8 +976,10 @@ Command = Union[
     UpdateProfileDisplayName,
     EnsureSourceConnection,
     ConfigureSourceCredentials,
+    ConfigureSourceCredentialsAndRequestCollection,
     RequestCollection,
     RunCollectionJob,
+    _RunNextPendingCollection,
     CreateTrainingSession,
     ReplaceTrainingSession,
     DeleteTrainingSession,
@@ -936,6 +1005,7 @@ ExecuteResult = Union[
     GoalEventView,
     TrainingPlanView,
     DeletedAppRecordView,
+    _RunNextPendingCollectionResult,
 ]
 
 
@@ -1086,6 +1156,9 @@ class CoachApplication:
         self.__collections = CollectionStore(settings)
         self.__app_records = AppRecordStore(settings, clock=clock)
         self.__reads = ReadProjectionStore(settings)
+        self.__ingest_connection: ContextVar[psycopg.Connection | None] = ContextVar(
+            f"coach_ingest_connection_{id(self)}", default=None
+        )
         self.__adapter = collection_adapter
         self.__encryption_key = encryption_key
         self.__temporary_root = temporary_root
@@ -1208,6 +1281,26 @@ class CoachApplication:
                     last_success_at=status.last_success_at,
                     checkpoint_revision=status.checkpoint_revision,
                 )
+            if isinstance(query, GetSourceConnectionStatus):
+                overview = self.__collections.source_overview_for_actor(
+                    actor.issuer, actor.subject, query.provider
+                )
+                if overview is None:
+                    return None
+                return SourceConnectionStatusView(
+                    provider=overview.provider,
+                    state=overview.state,
+                    credentials_stored=overview.credentials_stored,
+                    last_authenticated_at=overview.last_authenticated_at,
+                    reconnect_safe_code=overview.reconnect_safe_code,
+                    latest_job=(
+                        _job_view(overview.latest_job)
+                        if overview.latest_job is not None
+                        else None
+                    ),
+                    initial_sync=_source_status_view(overview.initial_sync),
+                    incremental=_source_status_view(overview.incremental),
+                )
             if isinstance(query, GetTrainingSession):
                 record = self.__app_records.get_training_session(
                     actor.issuer, actor.subject, query.id
@@ -1314,9 +1407,22 @@ class CoachApplication:
         self, actor: ClerkActor, command: ConfigureSourceCredentials
     ) -> SourceConnectionRef: ...
 
-    def execute(self, actor: ClerkActor, command: Command) -> ExecuteResult:
-        actor = _actor(actor)
+    @overload
+    def execute(
+        self, actor: _ServiceActor, command: _RunNextPendingCollection
+    ) -> _RunNextPendingCollectionResult: ...
+
+    def execute(
+        self, actor: ClerkActor | _ServiceActor, command: Command
+    ) -> ExecuteResult:
+        if isinstance(command, _RunNextPendingCollection):
+            if actor is not _COLLECTION_WORKER_ACTOR:
+                raise AccessDenied("internal collection command is unavailable")
+        else:
+            actor = _actor(actor)
         with _stable_errors():
+            if isinstance(command, _RunNextPendingCollection):
+                return self.__run_next_pending_collection()
             if isinstance(command, EnsureProfile):
                 self.__store.ensure_profile(
                     actor.issuer,
@@ -1369,6 +1475,41 @@ class CoachApplication:
                         encrypted,
                     )
                 return command.source
+            if isinstance(
+                command, ConfigureSourceCredentialsAndRequestCollection
+            ):
+                if not isinstance(command.source, SourceConnectionRef):
+                    raise InvalidRequest("a source capability is required")
+                if not isinstance(command.credentials, SecretBundle):
+                    raise InvalidRequest("a secret bundle is required")
+                if self.__encryption_key is None:
+                    raise InvalidRequest(
+                        "source credential encryption is not configured"
+                    )
+                encrypted = EncryptedBlob.encrypt(
+                    command.credentials._plaintext, self.__encryption_key
+                )
+                with self.__collections.locked_profile(
+                    command.source._profile_id
+                ) as connection:
+                    with connection.transaction():
+                        self.__store.replace_source_credentials_for_actor(
+                            connection,
+                            actor.issuer,
+                            actor.subject,
+                            command.source._profile_id,
+                            command.source._id,
+                            encrypted,
+                        )
+                        job = self.__collections.request_for_actor_on_connection(
+                            connection,
+                            actor.issuer,
+                            actor.subject,
+                            command.source._id,
+                            command.request_key,
+                            command.kind,
+                        )
+                return _job_view(job)
             if isinstance(command, RequestCollection):
                 if not isinstance(command.source, SourceConnectionRef):
                     raise InvalidRequest("a source capability is required")
@@ -1547,7 +1688,9 @@ class CoachApplication:
     ) -> IngestResult:
         _validate_ingest_capabilities(profile, batch)
         with _stable_errors():
-            result = self.__ingest_batch(profile, batch)
+            result = self.__ingest_batch(
+                profile, batch, connection=self.__ingest_connection.get()
+            )
             return IngestResult(
                 result.inserted,
                 result.unchanged,
@@ -1572,6 +1715,29 @@ class CoachApplication:
             observations=observations,
             connection=connection,
         )
+
+    def __run_next_pending_collection(
+        self,
+    ) -> _RunNextPendingCollectionResult:
+        """Select and run one durable job while holding the worker lease.
+
+        Stored Clerk identity and job ownership never cross the application
+        boundary. The singleton advisory lease remains live through recovery or
+        collection, so another service process cannot classify live work as
+        stranded.
+        """
+        with self.__collections.worker_connection() as worker_connection:
+            if worker_connection is None:
+                return _RunNextPendingCollectionResult(work_found=False)
+            work = self.__collections.next_pending_work(worker_connection)
+            if work is None:
+                return _RunNextPendingCollectionResult(work_found=False)
+            actor = ClerkActor(work.issuer, work.subject)
+            job = CollectionJobRef._from_uuids(
+                work.job.profile_id, work.job.id
+            )
+            self.__run_collection_job(actor, job)
+            return _RunNextPendingCollectionResult(work_found=True)
 
     def __run_collection_job(
         self, actor: ClerkActor, job_ref: CollectionJobRef
@@ -1614,6 +1780,15 @@ class CoachApplication:
                 )
                 raise CollectionFailed("source collection failed") from None
             except (CaptureStoreError, TypeError, ValueError):
+                self.__collections.fail_job(
+                    connection, lease, "invalid_response", needs_reconnect=False
+                )
+                raise CollectionFailed("source returned an invalid collection") from None
+            except ApplicationUnavailable:
+                # A lost database leaves running evidence for deterministic
+                # worker_lost recovery after connectivity returns.
+                raise
+            except CoachApplicationError:
                 self.__collections.fail_job(
                     connection, lease, "invalid_response", needs_reconnect=False
                 )
@@ -1695,13 +1870,27 @@ class CoachApplication:
             ):
                 raise ValueError("invalid external collection")
             profile = ProfileRef._from_uuid(lease.job.profile_id)
-            _validate_ingest_capabilities(profile, collected.batch)
-            if collected.batch.source._id != lease.job.source_connection_id:
-                raise AccessDenied("source collection capability does not match the job")
+            # Provider adapters never receive or manufacture opaque persistence
+            # capabilities. Bind the job-owned source inside the application
+            # boundary immediately before validation and ingest.
+            batch = replace(
+                collected.batch,
+                source=SourceConnectionRef._from_uuids(
+                    lease.job.profile_id, lease.job.source_connection_id
+                ),
+            )
+            _validate_ingest_capabilities(profile, batch)
             with connection.transaction():
-                result = self.__ingest_batch(
-                    profile, collected.batch, connection=connection
-                )
+                ingest_connection = self.__ingest_connection.set(connection)
+                try:
+                    # Production collection deliberately crosses the same public
+                    # use-case seam as every other producer. The context-local
+                    # connection keeps ingest, projections, checkpoint and job
+                    # completion in this one transaction without widening the
+                    # public ingest signature.
+                    result = self.ingest(profile, batch)
+                finally:
+                    self.__ingest_connection.reset(ingest_connection)
                 completed = self.__collections.complete_job(
                     connection,
                     lease,
@@ -1822,6 +2011,18 @@ def _job_view(job: _StoredJob) -> CollectionJobView:
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
+    )
+
+
+def _source_status_view(status: Any) -> SourceStatusView:
+    return SourceStatusView(
+        state=status.state,
+        outcome=status.outcome,
+        safe_code=status.safe_code,
+        attempted_at=status.attempted_at,
+        finished_at=status.finished_at,
+        last_success_at=status.last_success_at,
+        checkpoint_revision=status.checkpoint_revision,
     )
 
 

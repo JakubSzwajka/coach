@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+
+from tests.legacy_mcp import legacy_mcp_adapter
 
 from coach.data import ReadOnlyRecord, RevisionConflict
 from coach.mcp_server import (
@@ -19,9 +19,7 @@ from coach.mcp_server import (
 class McpAppSessionToolsTest(unittest.TestCase):
     def test_full_lifecycle_through_configured_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 created = create_training_session(
                     sport="bouldering",
                     local_date="2026-07-18",
@@ -68,9 +66,7 @@ class McpAppSessionToolsTest(unittest.TestCase):
 
     def test_garmin_ids_cannot_be_mutated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ, {"GARMIN_COACH_DATA_DIR": tmp}, clear=False
-            ):
+            with legacy_mcp_adapter(tmp):
                 with self.assertRaises(ReadOnlyRecord):
                     replace_training_session(
                         session_id="garmin:123",

@@ -108,4 +108,22 @@ env -i \
     tests.postgres.postgres_test_app_records \
     tests.postgres.postgres_test_app_contract \
     tests.postgres.postgres_test_read_projections \
+    tests.postgres.postgres_test_cutover \
     --verbose
+
+env -i \
+  PATH="$PATH" \
+  HOME="$TEST_HOME" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  PYTHONPATH="$PWD" \
+  PYTHONDONTWRITEBYTECODE=1 \
+  GARMIN_COACH_DISABLE_DOTENV=1 \
+  GARMIN_COACH_TEST_DATABASE_URL="$TEST_DATABASE_URL" \
+  GARMIN_COACH_TEST_MIGRATION_DATABASE_URL="$TEST_MIGRATION_DATABASE_URL" \
+  GARMIN_COACH_TEST_DATABASE_NAME="$DATABASE" \
+  GARMIN_COACH_TEST_DATABASE_PASSWORD="$PASSWORD" \
+  GARMIN_COACH_TEST_MIGRATION_DATABASE_PASSWORD="$ADMIN_PASSWORD" \
+  GARMIN_COACH_TEST_DATABASE_PORT="$host_port" \
+  GARMIN_COACH_TEST_RUN_ID="$RUN_ID" \
+  GARMIN_COACH_TEST_PYTHON="$PWD/.venv/bin/python" \
+  pnpm --dir web test:postgres
