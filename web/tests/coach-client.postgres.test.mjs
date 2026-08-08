@@ -69,13 +69,19 @@ test("verified Clerk server auth owns tenancy across real PostgreSQL reads and m
       type: "create_training_session",
       params: {
         content: {
-          sport: "strength",
+          sport: "running",
           local_date: "2026-07-22",
           title: "Signed-in server mutation",
+          duration: { value: 1800, unit: "seconds", basis: "active" },
+          distance: { value: 5000, unit: "metres" },
         },
       },
     });
     assert.equal(created.revision, 1);
+    const fetchedSession = await client.getTrainingSession(created.id);
+    assert.equal(fetchedSession.sport, "running");
+    assert.deepEqual(fetchedSession.duration, { value: 1800, unit: "seconds", basis: "active" });
+    assert.deepEqual(fetchedSession.distance, { value: 5000, unit: "metres" });
 
     await assert.rejects(
       client.executeAppCommand({
@@ -93,7 +99,41 @@ test("verified Clerk server auth owns tenancy across real PostgreSQL reads and m
       activities.map((session) => session.title),
       ["Signed-in server mutation"],
     );
-    assert.ok(auth.mock.callCount() >= 5);
+
+    const plan = await client.executeAppCommand({
+      type: "create_training_plan",
+      params: {
+        name: "Signed-in training plan",
+        starts_on: "2026-08-10",
+        ends_on: "2026-08-16",
+        reason: "Exercise the web plan projection",
+        constraints: ["Synthetic display constraint"],
+        planned_sessions: [
+          {
+            scheduled_date: "2026-08-11",
+            sport: "running",
+            session_type: "easy",
+            prescription: "Synthetic easy session",
+            target_duration_seconds: 1800,
+            effort_guidance: "Synthetic conversational effort",
+          },
+        ],
+      },
+    });
+    const plans = await client.getTrainingPlans();
+    assert.equal(plan.revision, 1);
+    assert.equal(plans.length, 1);
+    assert.equal(plans[0].name, "Signed-in training plan");
+    assert.equal(plans[0].planned_sessions[0].target_duration_seconds, 1800);
+
+    const calendar = await client.getCalendar(90, "2026-08-16");
+    assert.deepEqual(
+      calendar.items.map((item) => item.kind),
+      ["training_session", "planned_session"],
+    );
+    assert.equal(calendar.items[0].title, "Signed-in server mutation");
+    assert.equal(calendar.items[1].plan_name, "Signed-in training plan");
+    assert.ok(auth.mock.callCount() >= 9);
 
     const sentinel = fs.mkdtempSync(path.join(os.tmpdir(), "coach-legacy-sentinel-"));
     process.env.GARMIN_COACH_DATA_DIR = sentinel;

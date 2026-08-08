@@ -54,6 +54,7 @@ from .application import (
     GetTrainingPlanHistory,
     GetTrainingSession,
     GetTrends,
+    GetUnifiedCalendar,
     InvalidRequest,
     ListGoalEvents,
     ListTrainingPlans,
@@ -69,6 +70,7 @@ from .application import (
     TrainingPlansView,
     TrainingSessionRecordsView,
     TrendsView,
+    UnifiedCalendarView,
     UpdateProfileDisplayName,
     _COLLECTION_WORKER_ACTOR,
     _RunNextPendingCollection,
@@ -265,6 +267,11 @@ class CoachHttpService:
                 self.application.read(
                     actor, ListTrainingSessions(starts_on, ends_on, sport)
                 )
+            )
+        if method == "GET" and path == "/v1/calendar":
+            starts_on, ends_on = _window(query)
+            return 200, _serialize(
+                self.application.read(actor, GetUnifiedCalendar(starts_on, ends_on))
             )
         if method == "GET" and path == "/v1/garmin/status":
             return 200, _garmin_status(
@@ -646,6 +653,12 @@ def _serialize(value: Any) -> Any:
                 for item in value.revisions
             ],
         }
+    if isinstance(value, UnifiedCalendarView):
+        return {
+            "starts_on": value.starts_on,
+            "ends_on": value.ends_on,
+            "items": [_calendar_item(item) for item in value.items],
+        }
     if isinstance(value, TrendsView):
         return {
             "starts_on": value.starts_on,
@@ -709,6 +722,100 @@ def _serialize(value: Any) -> Any:
             "collection_health": _safe_health(value.collection_health),
         }
     return value
+
+
+def _calendar_item(item: Any) -> dict[str, Any]:
+    if item.kind == "training_session":
+        annotation = item.annotation
+        return {
+            "kind": item.kind,
+            "id": item.id,
+            "local_date": item.local_date,
+            "local_start": item.local_start,
+            "timing_precision": item.timing_precision,
+            "origin": item.origin,
+            "ownership": item.ownership,
+            **dict(item.content),
+            "annotation": (
+                {
+                    "id": annotation.id,
+                    "revision": annotation.revision,
+                    "notes": annotation.notes,
+                    "reliability": annotation.reliability,
+                    "duplicate": annotation.duplicate,
+                }
+                if annotation is not None
+                else None
+            ),
+            "plan_matches": [
+                {
+                    "plan_id": match.plan_id,
+                    "plan_name": match.plan_name,
+                    "plan_status": match.plan_status,
+                    "plan_revision": match.plan_revision,
+                    "planned_session_id": match.planned_session_id,
+                }
+                for match in item.plan_matches
+            ],
+            "revision": item.revision,
+        }
+    if item.kind == "planned_session":
+        return {
+            "kind": item.kind,
+            "id": item.id,
+            "local_date": item.local_date,
+            "plan_id": item.plan_id,
+            "plan_name": item.plan_name,
+            "plan_status": item.plan_status,
+            "plan_revision": item.plan_revision,
+            "plan_requires_review": item.plan_requires_review,
+            "sport": item.sport,
+            "session_type": item.session_type,
+            "prescription": item.prescription,
+            "target_duration_seconds": item.target_duration_seconds,
+            "target_distance_meters": item.target_distance_meters,
+            "effort_guidance": item.effort_guidance,
+            "disposition": item.disposition,
+            "fulfilment_note": item.fulfilment_note,
+            "matches": [
+                {
+                    "training_session_id": match.training_session_id,
+                    "ownership": match.ownership,
+                    "local_date": match.local_date,
+                    "sport": match.sport,
+                }
+                for match in item.matches
+            ],
+        }
+    return {
+        "kind": item.kind,
+        "id": item.id,
+        "local_date": item.local_date,
+        "local_start": item.local_start,
+        "timing_precision": item.timing_precision,
+        "sport": item.sport,
+        "name": item.name,
+        "priority": item.priority,
+        "status": item.status,
+        "distance": item.distance,
+        "goal": item.goal,
+        "outcome": item.outcome,
+        "notes": item.notes,
+        "revision": item.revision,
+        "requires_review": item.requires_review,
+        "plan_references": [
+            {
+                "plan_id": reference.plan_id,
+                "plan_name": reference.plan_name,
+                "plan_status": reference.plan_status,
+                "plan_revision": reference.plan_revision,
+                "referenced_revision": reference.referenced_revision,
+                "stale": reference.stale,
+                "stale_reason": reference.stale_reason,
+            }
+            for reference in item.plan_references
+        ],
+    }
 
 
 def _safe_health(health: Any) -> dict[str, Any]:

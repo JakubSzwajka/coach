@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm test:bundle",
+    "test": "pnpm test:routes && pnpm test:bundle",
+    "test:routes": "node --test tests/session-route.test.mjs",
     "test:bundle": "node --test tests/server-only-bundle.test.mjs",
     "test:postgres": "node --experimental-test-module-mocks --test tests/coach-client.postgres.test.mjs"
   },

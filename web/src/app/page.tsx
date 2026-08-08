@@ -1,22 +1,15 @@
 import { NoProfile } from "@/components/no-profile";
 import { StatCard } from "@/components/stat-card";
+import { TrendsCharts } from "@/components/trends-charts";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { getDashboard } from "@/lib/coach-client";
-import { fmtHoursMin, fmtInt, fmtKm, fmtNum, fmtShortDate } from "@/lib/format";
+import { getDashboard, getTrends } from "@/lib/coach-client";
+import { fmtHoursMin, fmtInt, fmtNum, fmtShortDate } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const dashboard = await getDashboard();
+  const [dashboard, trends] = await Promise.all([getDashboard(), getTrends()]);
   if (!dashboard) return <NoProfile />;
   const latest = Object.fromEntries(
     dashboard.latest_observations.map((item) => [item.definition, item]),
@@ -30,7 +23,6 @@ export default async function DashboardPage() {
     const candidate = value(definition);
     return typeof candidate === "string" ? candidate : undefined;
   };
-  const recent = dashboard.recent_sessions;
 
   if (dashboard.collection_health.records === 0 && !dashboard.display_name) {
     return (
@@ -100,46 +92,16 @@ export default async function DashboardPage() {
       </div>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold tracking-tight">Recent activities</h2>
-        {recent.length === 0 ? (
-          <p className="text-muted-foreground text-sm">No activities collected.</p>
+        <div>
+          <h2 className="text-sm font-semibold tracking-tight">Trends</h2>
+          <p className="text-muted-foreground text-sm">
+            Daily wellness and training signals over time.
+          </p>
+        </div>
+        {!trends || trends.series.length === 0 ? (
+          <p className="text-muted-foreground text-sm">No trend data collected.</p>
         ) : (
-          <Card>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Activity</TableHead>
-                  <TableHead>Sport</TableHead>
-                  <TableHead className="text-right">Distance</TableHead>
-                  <TableHead className="text-right">Avg HR</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {recent.map((a) => (
-                  <TableRow key={a.id}>
-                    <TableCell className="whitespace-nowrap">
-                      {fmtShortDate(a.local_start ?? a.local_date)}
-                    </TableCell>
-                    <TableCell className="max-w-[280px] truncate font-medium">{a.title}</TableCell>
-                    <TableCell>
-                      {a.sport ? (
-                        <Badge variant="outline" className="capitalize">
-                          {a.sport}
-                        </Badge>
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {fmtKm(a.distance?.unit === "metres" ? a.distance.value : undefined)}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">—</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </Card>
+          <TrendsCharts trends={trends} />
         )}
       </section>
     </div>

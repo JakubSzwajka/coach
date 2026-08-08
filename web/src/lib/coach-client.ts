@@ -86,6 +86,116 @@ export interface TrendsProjection {
   series: TrendSeries[];
 }
 
+export interface PlannedSession {
+  id: string;
+  scheduled_date: string;
+  sport: string;
+  session_type: string | null;
+  prescription: string;
+  target_duration_seconds: number | null;
+  target_distance_meters: number | null;
+  effort_guidance: string | null;
+  disposition: "scheduled" | "fulfilled" | "skipped" | "cancelled";
+  fulfilment_note: string | null;
+  matches: string[];
+}
+
+export interface TrainingPlan {
+  id: string;
+  origin: "app_record";
+  name: string;
+  starts_on: string;
+  ends_on: string;
+  status: "draft" | "active" | "archived";
+  requires_review: boolean;
+  goal_events: Array<Record<string, unknown>>;
+  constraints: string[];
+  planned_sessions: PlannedSession[];
+  created_at: string;
+  updated_at: string;
+  revision: number;
+}
+
+export interface CalendarTrainingSession {
+  kind: "training_session";
+  id: string;
+  local_date: string;
+  local_start: string | null;
+  timing_precision: "date_only" | "local_datetime";
+  origin: "collected_record" | "app_record";
+  ownership: "collected" | "app";
+  sport: string;
+  session_type: string | null;
+  title: string | null;
+  duration: { value: number; unit: string; basis: string } | null;
+  distance: { value: number; unit: string } | null;
+  notes: string | null;
+  annotation: {
+    id: string;
+    revision: number;
+    notes: string | null;
+    reliability: string | null;
+    duplicate: boolean;
+  } | null;
+  plan_matches: Array<{
+    plan_id: string;
+    plan_name: string;
+    plan_status: string;
+    plan_revision: number;
+    planned_session_id: string;
+  }>;
+  revision: number | null;
+}
+
+export interface CalendarPlannedSession {
+  kind: "planned_session";
+  id: string;
+  local_date: string;
+  plan_id: string;
+  plan_name: string;
+  plan_status: "draft" | "active" | "archived";
+  plan_revision: number;
+  plan_requires_review: boolean;
+  sport: string;
+  session_type: string | null;
+  prescription: string;
+  target_duration_seconds: number | null;
+  target_distance_meters: number | null;
+  effort_guidance: string | null;
+  disposition: "scheduled" | "fulfilled" | "skipped" | "cancelled";
+  fulfilment_note: string | null;
+  matches: Array<{
+    training_session_id: string;
+    ownership: "collected" | "app";
+    local_date: string;
+    sport: string;
+  }>;
+}
+
+export interface CalendarGoalEvent {
+  kind: "goal_event";
+  id: string;
+  local_date: string;
+  local_start: string | null;
+  timing_precision: "date_only" | "local_datetime";
+  sport: string;
+  name: string;
+  priority: string;
+  status: string;
+  distance: { value: number; unit: string } | null;
+  notes: string | null;
+  revision: number;
+  requires_review: boolean;
+}
+
+export type CalendarItem = CalendarTrainingSession | CalendarPlannedSession | CalendarGoalEvent;
+
+export interface CalendarProjection {
+  starts_on: string;
+  ends_on: string;
+  items: CalendarItem[];
+}
+
 export type GarminConnectionPhase =
   | "not_connected"
   | "credentials_stored"
@@ -241,8 +351,21 @@ export async function getActivities(days = 90): Promise<TrainingSession[]> {
   return result.sessions;
 }
 
+export function getTrainingSession(id: string): Promise<TrainingSession> {
+  return request(`/v1/app/training-sessions/${id}`);
+}
+
 export function getTrends(days = 90): Promise<TrendsProjection | null> {
   return request(`/v1/trends?days=${days}`);
+}
+
+export async function getTrainingPlans(): Promise<TrainingPlan[]> {
+  const result = await request<{ plans: TrainingPlan[] }>("/v1/app/training-plans");
+  return result.plans;
+}
+
+export function getCalendar(days: number, endDate: string): Promise<CalendarProjection | null> {
+  return request(`/v1/calendar?days=${days}&end_date=${encodeURIComponent(endDate)}`);
 }
 
 export function getGarminStatus(): Promise<GarminStatus> {

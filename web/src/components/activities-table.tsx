@@ -10,6 +10,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { ArrowUpDown } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,7 @@ import {
 } from "@/components/ui/table";
 import type { TrainingSession } from "@/lib/coach-client";
 import { fmtDuration, fmtInt, fmtKm, fmtShortDate } from "@/lib/format";
+import { sessionHref } from "@/lib/session-route";
 import { cn } from "@/lib/utils";
 
 declare module "@tanstack/react-table" {
@@ -60,9 +62,12 @@ const columns: ColumnDef<TrainingSession>[] = [
     accessorKey: "title",
     header: "Activity",
     cell: ({ row }) => (
-      <span className="block max-w-[280px] truncate font-medium">
+      <Link
+        href={sessionHref(row.original.id)}
+        className="hover:text-primary block max-w-[280px] truncate font-medium underline-offset-4 hover:underline"
+      >
         {row.original.title ?? "Untitled session"}
-      </span>
+      </Link>
     ),
   },
   {
