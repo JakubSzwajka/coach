@@ -28,9 +28,12 @@ contain a Profile id or Clerk actor. Protected Next routes derive the Clerk
 subject with `auth()` and pass it over the authenticated private hop.
 
 Legacy files are permitted only as frozen migration input, export, backup, or
-rollback material under the separately owner-gated private-data cutover. This
-change does not inspect or import them. See
-[`ADR-0004`](docs/adr/0004-postgresql-durable-runtime-authority.md).
+rollback material under the separately owner-gated private-data cutover. The
+one-shot importer and privacy-safe shadow report are maintenance-only and have
+been rehearsed with disposable synthetic fixtures; they do not authorize
+private-data access or provide runtime fallback. See
+[`ADR-0004`](docs/adr/0004-postgresql-durable-runtime-authority.md) and the
+[synthetic import rehearsal](docs/maintenance/file-store-import.md).
 
 ## One local stack
 
@@ -238,8 +241,9 @@ pnpm build
 
 The PostgreSQL gate proves collector ingest, local and remote MCP policy and
 reads, representative App Record mutations, stale revisions, actor isolation,
-service-auth failure, server-side actor derivation, raw non-exposure, and
-outage fail-closed behavior with synthetic fixtures only.
+service-auth failure, server-side actor derivation, raw non-exposure, outage
+fail-closed behavior, and idempotent two-Profile file import/reconciliation with
+synthetic fixtures only.
 
 ## Repository layout
 

@@ -12,6 +12,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -373,6 +374,11 @@ def _daily_observations(local_date: date, payloads: Mapping[str, Any]) -> list[C
     for endpoint, definition, value_type, unit, value in definitions:
         if endpoint not in payloads:
             continue
+        if value_type == "integer" and not isinstance(value, bool):
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            elif isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value():
+                value = int(value)
         observations.append(
             ControlledObservation(
                 capture=CapturePointer(f"daily.{endpoint}", local_date.isoformat()),

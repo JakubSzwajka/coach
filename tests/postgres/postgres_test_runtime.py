@@ -58,6 +58,52 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
             check=False,
         )
 
+    def test_0008_downgrade_refuses_to_discard_import_evidence(self) -> None:
+        self.assertEqual(self._migration("upgrade").returncode, 0)
+        profile_id = uuid4()
+        with psycopg.connect(self.database_url) as connection:
+            connection.execute("TRUNCATE TABLE profiles CASCADE")
+            connection.execute(
+                "INSERT INTO profiles (id, clerk_issuer, clerk_subject) "
+                "VALUES (%s, %s, %s)",
+                (profile_id, "https://identity.example.test", "import-evidence"),
+            )
+            connection.execute(
+                """
+                INSERT INTO file_import_units (
+                    profile_id, importer_version, source_manifest_hash,
+                    inventory_counts
+                ) VALUES (%s, 1, %s, '{}'::jsonb)
+                """,
+                (profile_id, b"i" * 32),
+            )
+
+        refused = self._migration("downgrade", "0007_collection_job_admission")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("database migration failed", refused.stderr)
+        self.assertNotIn("import-evidence", refused.stdout + refused.stderr)
+        with psycopg.connect(self.database_url) as connection:
+            self.assertEqual(
+                connection.execute("SELECT version_num FROM alembic_version").fetchone(),
+                ("0008_file_import_units",),
+            )
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM file_import_units").fetchone(),
+                (1,),
+            )
+            # Production correctly blocks destruction of committed import
+            # evidence. This disposable database cleanup deliberately disables
+            # only that guard and restores it in the same transaction.
+            connection.execute(
+                "ALTER TABLE file_import_units "
+                "DISABLE TRIGGER file_import_units_truncate_guard"
+            )
+            connection.execute("TRUNCATE TABLE profiles CASCADE")
+            connection.execute(
+                "ALTER TABLE file_import_units "
+                "ENABLE TRIGGER file_import_units_truncate_guard"
+            )
+
     def test_0005_downgrade_preserves_collected_state_and_refuses_app_loss(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)
         profile_id, source_id, record_id, capture_id, session_id = (
@@ -142,7 +188,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
         with psycopg.connect(self.database_url) as connection:
             self.assertEqual(
                 connection.execute("SELECT version_num FROM alembic_version").fetchone(),
-                ("0007_collection_job_admission",),
+                ("0008_file_import_units",),
             )
             connection.execute("TRUNCATE TABLE profiles CASCADE")
 
@@ -230,7 +276,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
         with psycopg.connect(self.database_url) as connection:
             self.assertEqual(
                 connection.execute("SELECT version_num FROM alembic_version").fetchone(),
-                ("0007_collection_job_admission",),
+                ("0008_file_import_units",),
             )
             self.assertEqual(
                 connection.execute(
@@ -251,7 +297,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
             revision = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()
-        self.assertEqual(revision, ("0007_collection_job_admission",))
+        self.assertEqual(revision, ("0008_file_import_units",))
 
     def test_current_command_reports_the_applied_revision(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)
@@ -259,7 +305,7 @@ class PostgreSQLRuntimeTest(unittest.TestCase):
         current = self._migration("current")
 
         self.assertEqual(current.returncode, 0, current.stderr)
-        self.assertIn("0007_collection_job_admission", current.stdout)
+        self.assertIn("0008_file_import_units", current.stdout)
 
     def test_0006_populated_downgrade_preserves_capture_authority_and_rebuilds(self) -> None:
         self.assertEqual(self._migration("upgrade").returncode, 0)

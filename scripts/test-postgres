@@ -109,6 +109,7 @@ env -i \
     tests.postgres.postgres_test_app_contract \
     tests.postgres.postgres_test_read_projections \
     tests.postgres.postgres_test_cutover \
+    tests.postgres.postgres_test_file_import \
     --verbose
 
 env -i \
