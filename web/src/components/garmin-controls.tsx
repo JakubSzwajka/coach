@@ -55,6 +55,7 @@ export function GarminControls() {
   const [password, setPassword] = useState("");
   const [days, setDays] = useState(365);
   const [formError, setFormError] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
   const lastJobState = useRef<string | null>(null);
 
   const loadStatus = useCallback(async () => {
@@ -93,31 +94,40 @@ export function GarminControls() {
 
   const startJob = async (endpoint: string, body?: object) => {
     setFormError(null);
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!response.ok) {
-      const result = (await response.json().catch(() => ({}))) as { error?: string };
-      setFormError(ERROR_LABELS[result.error ?? ""] ?? "Could not start the Garmin update.");
-      await loadStatus();
+    setIsPending(true);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!response.ok) {
+        const result = (await response.json().catch(() => ({}))) as { error?: string };
+        setFormError(ERROR_LABELS[result.error ?? ""] ?? "Could not start the Garmin update.");
+        await loadStatus();
+        return false;
+      }
+      lastJobState.current = "requested";
+      setStatus((current) => ({
+        connected: current?.connected ?? false,
+        phase: endpoint.endsWith("connect") ? "credentials_stored" : "syncing",
+        job: {
+          state: "requested",
+          kind: endpoint.endsWith("connect") ? "initial_sync" : "incremental",
+        },
+      }));
+      return true;
+    } catch {
+      setFormError("Could not reach the Garmin update service.");
       return false;
+    } finally {
+      setIsPending(false);
     }
-    lastJobState.current = "requested";
-    setStatus((current) => ({
-      connected: current?.connected ?? false,
-      phase: endpoint.endsWith("connect") ? "credentials_stored" : "syncing",
-      job: {
-        state: "requested",
-        kind: endpoint.endsWith("connect") ? "initial_sync" : "incremental",
-      },
-    }));
-    return true;
   };
 
   const connect = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (isPending) return;
     const started = await startJob("/api/garmin/connect", { email, password, days });
     setPassword("");
     if (started) setModalOpen(false);
@@ -125,12 +135,25 @@ export function GarminControls() {
 
   const statusLabel = status ? PHASE_LABELS[status.phase] : null;
   const canRefresh = status?.connected && status.phase !== "needs_reconnect";
+  const busy = running || isPending;
+  const pendingLabel = canRefresh ? "Starting Garmin refresh…" : "Connecting to Garmin…";
 
   return (
     <>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2" aria-busy={busy}>
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {isPending ? pendingLabel : (statusLabel ?? "")}
+        </span>
+        {formError && !modalOpen ? (
+          <span role="alert" className="text-destructive max-w-32 truncate text-xs sm:max-w-48">
+            {formError}
+          </span>
+        ) : null}
         {statusLabel ? (
-          <span className="text-muted-foreground hidden max-w-64 truncate text-xs lg:inline">
+          <span
+            aria-hidden="true"
+            className="text-muted-foreground hidden max-w-64 truncate text-xs lg:inline"
+          >
             {statusLabel}
           </span>
         ) : null}
@@ -138,16 +161,26 @@ export function GarminControls() {
           <Button
             variant="outline"
             size="sm"
-            disabled={running}
+            disabled={busy}
             onClick={() => void startJob("/api/garmin/refresh")}
           >
-            <RefreshCw className={running ? "animate-spin" : ""} />
-            {running ? "Updating" : "Refresh Garmin"}
+            <RefreshCw
+              data-icon="inline-start"
+              className={busy ? "animate-spin motion-reduce:animate-none" : ""}
+            />
+            {busy ? "Updating" : "Refresh Garmin"}
           </Button>
         ) : (
-          <Button size="sm" disabled={running} onClick={() => setModalOpen(true)}>
-            {running ? <RefreshCw className="animate-spin" /> : <Unplug />}
-            {running
+          <Button size="sm" disabled={busy} onClick={() => setModalOpen(true)}>
+            {busy ? (
+              <RefreshCw
+                data-icon="inline-start"
+                className="animate-spin motion-reduce:animate-none"
+              />
+            ) : (
+              <Unplug data-icon="inline-start" />
+            )}
+            {busy
               ? "Connecting"
               : status?.phase === "needs_reconnect"
                 ? "Reconnect Garmin"
@@ -179,13 +212,13 @@ export function GarminControls() {
                 <span className="sr-only">Close</span>
               </Button>
             </div>
-            <form className="mt-6 space-y-4" onSubmit={connect}>
+            <form className="mt-6 space-y-4" aria-busy={isPending} onSubmit={connect}>
               <div className="space-y-2">
                 <Label htmlFor="garmin-email">Garmin email</Label>
                 <Input
                   id="garmin-email"
                   type="email"
-                  autoComplete="username"
+                  autoComplete="email"
                   required
                   maxLength={320}
                   value={email}
@@ -219,12 +252,28 @@ export function GarminControls() {
                   Days to collect on first connect (1–730).
                 </p>
               </div>
-              {formError ? <p className="text-destructive text-sm">{formError}</p> : null}
+              {formError ? (
+                <p role="alert" className="text-destructive text-sm">
+                  {formError}
+                </p>
+              ) : null}
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setModalOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit">Connect and backfill</Button>
+                <Button type="submit" disabled={isPending}>
+                  {isPending ? (
+                    <>
+                      <RefreshCw
+                        data-icon="inline-start"
+                        className="animate-spin motion-reduce:animate-none"
+                      />
+                      Connecting…
+                    </>
+                  ) : (
+                    "Connect and backfill"
+                  )}
+                </Button>
               </div>
             </form>
           </section>
