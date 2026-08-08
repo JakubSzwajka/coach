@@ -338,7 +338,7 @@ class CutoverPostgreSQLTest(unittest.TestCase):
         release = threading.Event()
 
         class BlockingAdapter(_SyntheticGarminAdapter):
-            def collect(self, session, kind):
+            def collect(self, session, kind, prior_checkpoint):
                 started.set()
                 if not release.wait(timeout=10):
                     raise AssertionError("synthetic collection was not released")
@@ -425,7 +425,7 @@ class CutoverPostgreSQLTest(unittest.TestCase):
         release = threading.Event()
 
         class BlockingAdapter(_SyntheticGarminAdapter):
-            def collect(self, session, kind):
+            def collect(self, session, kind, prior_checkpoint):
                 started.set()
                 if not release.wait(timeout=10):
                     raise AssertionError("synthetic collection was not released")

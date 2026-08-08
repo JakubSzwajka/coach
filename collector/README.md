@@ -27,10 +27,19 @@ GARMIN_PASSWORD='<garmin-password>' \
 python -m collector.collect --days 30 --reconnect
 ```
 
-Incremental jobs use cached encrypted tokens and omit Garmin credentials. Garmin
-remains read-only. Repairable authentication or MFA transitions the source to
-`needs_reconnect`; provider/rate-limit failures preserve prior successful data
-and freshness rather than advancing a checkpoint.
+Incremental jobs use cached encrypted tokens and omit Garmin credentials. The
+last committed checkpoint defines the daily catch-up window with a two-day
+overlap. Activity list pages are scanned newest-first, but detail endpoints are
+called only for activities inside a three-day checkpoint overlap. Once every
+seven days, an incremental run reconciles details for the latest configured
+activity window (100 by default). A missing checkpoint performs the same full
+bootstrap reconciliation. Because ingest and checkpoint advancement are
+atomic, failed or incomplete activity pulls retain the old cursor and are
+retried on the next run.
+
+Garmin remains read-only. Repairable authentication or MFA transitions the
+source to `needs_reconnect`; provider/rate-limit failures preserve prior
+successful data and freshness rather than advancing a checkpoint.
 
 Test-only frozen file adapters under `tests/legacy_file_*` keep historical
 portable behavior contracts executable. No producer or consumer entry point

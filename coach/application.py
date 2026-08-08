@@ -1136,7 +1136,10 @@ class _CollectionAdapter(Protocol):
     ) -> _AuthenticatedTokenSession: ...
 
     def collect(
-        self, session: Any, kind: str
+        self,
+        session: Any,
+        kind: str,
+        prior_checkpoint: Mapping[str, Any] | None,
     ) -> _ExternalCollection: ...
 
 
@@ -1860,8 +1863,16 @@ class CoachApplication:
                 lease.job.source_connection_id,
                 rotated,
             )
+            prior_checkpoint = self.__collections.checkpoint_cursor(
+                connection,
+                lease.job.profile_id,
+                lease.job.source_connection_id,
+                lease.job.kind,
+            )
             collected = self.__adapter.collect(
-                authenticated.handle, lease.job.kind
+                authenticated.handle,
+                lease.job.kind,
+                prior_checkpoint,
             )
             if (
                 not isinstance(collected, _ExternalCollection)

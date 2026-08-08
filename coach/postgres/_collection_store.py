@@ -578,6 +578,31 @@ class CollectionStore:
             reconnect_safe_code=row[12],
         )
 
+    def checkpoint_cursor(
+        self,
+        connection: psycopg.Connection,
+        profile_id: UUID,
+        source_connection_id: UUID,
+        domain: str,
+    ) -> Mapping[str, Any] | None:
+        if domain not in {"initial_sync", "incremental"}:
+            raise CaptureStoreError("collection checkpoint domain is invalid")
+        domains = (domain,) if domain == "initial_sync" else (domain, "initial_sync")
+        row = connection.execute(
+            """
+            SELECT cursor
+            FROM collection_checkpoints
+            WHERE profile_id = %s AND source_connection_id = %s
+              AND domain = ANY(%s)
+            ORDER BY CASE WHEN domain = %s THEN 0 ELSE 1 END
+            LIMIT 1
+            """,
+            (profile_id, source_connection_id, list(domains), domain),
+        ).fetchone()
+        if row is None:
+            return None
+        return _safe_json_object(row[0], "cursor")
+
     def persist_rotated_tokens(
         self,
         connection: psycopg.Connection,

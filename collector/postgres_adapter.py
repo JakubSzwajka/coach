@@ -34,6 +34,13 @@ from coach.application import (
 from . import endpoints
 
 
+_ACTIVITY_OVERLAP_DAYS = 3
+_ACTIVITY_PAGE_SIZE = 20
+_ACTIVITY_RECONCILIATION_DAYS = 7
+_INCREMENTAL_DAILY_OVERLAP_DAYS = 2
+_MAX_INCREMENTAL_DAYS = 730
+
+
 @dataclass(slots=True)
 class _GarminSession:
     client: Garmin
@@ -100,19 +107,30 @@ class GarminCollectionAdapter:
             _GarminSession(client, initial_days, activity_limit), rotated
         )
 
-    def collect(self, session: Any, kind: str) -> _ExternalCollection:
+    def collect(
+        self,
+        session: Any,
+        kind: str,
+        prior_checkpoint: Mapping[str, Any] | None = None,
+    ) -> _ExternalCollection:
         if not isinstance(session, _GarminSession):
             raise ValueError("invalid Garmin session")
         if kind not in {"initial_sync", "incremental"}:
             raise ValueError("unsupported collection kind")
+        if prior_checkpoint is not None and not isinstance(prior_checkpoint, Mapping):
+            raise ValueError("invalid prior checkpoint")
         today = date.today()
-        days = session.initial_days if kind == "initial_sync" else 2
+        collection_dates = _daily_collection_dates(
+            today,
+            kind,
+            session.initial_days,
+            prior_checkpoint,
+        )
         captures: list[CollectedCapture] = []
         observations: list[ControlledObservation] = []
         sessions: list[CollectedTrainingSession] = []
 
-        for offset in range(days):
-            local_date = today - timedelta(days=offset)
+        for local_date in collection_dates:
             iso = local_date.isoformat()
             daily_payloads: dict[str, Any] = {}
             for name, function in endpoints.DAILY.items():
@@ -145,16 +163,21 @@ class GarminCollectionAdapter:
                     )
                 )
 
-        try:
-            activities = session.client.get_activities(0, session.activity_limit)
-        except Exception as exc:
-            _raise_provider_error(exc)
-        if not isinstance(activities, list):
-            raise ValueError("Garmin activities response is invalid")
-        for listed in activities:
-            if not isinstance(listed, dict) or listed.get("activityId") is None:
-                continue
-            activity_id = str(listed["activityId"])
+        reconcile_activities = _reconcile_activities(
+            today,
+            kind,
+            prior_checkpoint,
+        )
+        listed_activities, detail_activities = _activities_to_collect(
+            session.client,
+            session.activity_limit,
+            cutoff=(
+                _activity_cutoff(prior_checkpoint)
+                if kind == "incremental" and not reconcile_activities
+                else None
+            ),
+        )
+        for activity_id, listed in listed_activities:
             captures.append(
                 CollectedCapture(
                     "activity.list_summary",
@@ -163,6 +186,7 @@ class GarminCollectionAdapter:
                     provenance={"provider": "garmin", "endpoint": "activities"},
                 )
             )
+        for activity_id, listed in detail_activities:
             details: dict[str, Any] = {}
             for name, function in endpoints.ACTIVITY_DETAIL.items():
                 payload = _pull_optional(function, session.client, listed["activityId"])
@@ -216,16 +240,147 @@ class GarminCollectionAdapter:
             sessions=tuple(sessions),
             observations=tuple(observations),
         )
+        prior_reconciliation = (
+            _checkpoint_date(prior_checkpoint, "last_activity_reconciliation")
+            or _checkpoint_date(prior_checkpoint, "through_date")
+        )
+        checkpoint_cursor: dict[str, Any] = {
+            "through_date": today.isoformat(),
+            "activity_window": session.activity_limit,
+            "activity_overlap_days": _ACTIVITY_OVERLAP_DAYS,
+            "last_activity_reconciliation": (
+                today if reconcile_activities else prior_reconciliation or today
+            ).isoformat(),
+        }
+        if listed_activities:
+            latest_id, latest = listed_activities[0]
+            checkpoint_cursor["latest_activity_id"] = latest_id
+            latest_date = _listed_activity_date(latest)
+            if latest_date is not None:
+                checkpoint_cursor["latest_activity_date"] = latest_date.isoformat()
         return _ExternalCollection(
             batch,
-            CollectionCheckpoint(
-                kind,
-                {
-                    "through_date": today.isoformat(),
-                    "activity_window": session.activity_limit,
-                },
-            ),
+            CollectionCheckpoint(kind, checkpoint_cursor),
         )
+
+
+def _checkpoint_date(
+    checkpoint: Mapping[str, Any] | None,
+    key: str,
+) -> date | None:
+    if checkpoint is None:
+        return None
+    value = checkpoint.get(key)
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _daily_collection_dates(
+    today: date,
+    kind: str,
+    initial_days: int,
+    prior_checkpoint: Mapping[str, Any] | None,
+) -> tuple[date, ...]:
+    if kind == "initial_sync":
+        days = initial_days
+    else:
+        through = _checkpoint_date(prior_checkpoint, "through_date")
+        if through is None:
+            days = _INCREMENTAL_DAILY_OVERLAP_DAYS
+        else:
+            boundary = min(through, today)
+            starts_on = boundary - timedelta(
+                days=_INCREMENTAL_DAILY_OVERLAP_DAYS - 1
+            )
+            earliest = today - timedelta(days=_MAX_INCREMENTAL_DAYS - 1)
+            starts_on = max(starts_on, earliest)
+            days = (today - starts_on).days + 1
+    return tuple(today - timedelta(days=offset) for offset in range(days))
+
+
+def _reconcile_activities(
+    today: date,
+    kind: str,
+    prior_checkpoint: Mapping[str, Any] | None,
+) -> bool:
+    if kind == "initial_sync" or prior_checkpoint is None:
+        return True
+    reconciled_on = (
+        _checkpoint_date(prior_checkpoint, "last_activity_reconciliation")
+        or _checkpoint_date(prior_checkpoint, "through_date")
+    )
+    return (
+        reconciled_on is None
+        or (today - min(reconciled_on, today)).days
+        >= _ACTIVITY_RECONCILIATION_DAYS
+    )
+
+
+def _activity_cutoff(
+    prior_checkpoint: Mapping[str, Any] | None,
+) -> date | None:
+    through = _checkpoint_date(prior_checkpoint, "through_date")
+    if through is None:
+        return None
+    return through - timedelta(days=_ACTIVITY_OVERLAP_DAYS)
+
+
+def _listed_activity_date(listed: Mapping[str, Any]) -> date | None:
+    for key in ("startTimeLocal", "startTimeGMT"):
+        value = listed.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            return datetime.fromisoformat(value.replace(" ", "T")).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _activities_to_collect(
+    client: Garmin,
+    scan_limit: int,
+    *,
+    cutoff: date | None,
+) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, dict[str, Any]]]]:
+    listed_activities: list[tuple[str, dict[str, Any]]] = []
+    detail_activities: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    offset = 0
+    scanned = 0
+    reached_cutoff = False
+    while scanned < scan_limit and not reached_cutoff:
+        page_limit = min(_ACTIVITY_PAGE_SIZE, scan_limit - scanned)
+        try:
+            page = client.get_activities(offset, page_limit)
+        except Exception as exc:
+            _raise_provider_error(exc)
+        if not isinstance(page, list):
+            raise ValueError("Garmin activities response is invalid")
+        if not page:
+            break
+        scanned += len(page)
+        offset += len(page)
+        for listed in page:
+            if not isinstance(listed, dict) or listed.get("activityId") is None:
+                continue
+            activity_id = str(listed["activityId"])
+            if activity_id in seen:
+                continue
+            seen.add(activity_id)
+            listed_activities.append((activity_id, listed))
+            listed_date = _listed_activity_date(listed)
+            if cutoff is not None and listed_date is not None and listed_date < cutoff:
+                reached_cutoff = True
+                break
+            detail_activities.append((activity_id, listed))
+        if len(page) < page_limit:
+            break
+    return listed_activities, detail_activities
 
 
 def credential_bundle(email: str, password: str, *, initial_days: int = 365) -> bytes:

@@ -66,6 +66,7 @@ class SyntheticAdapter:
         self.auth_errors: list[Exception | None] = []
         self.collection_error: Exception | None = None
         self.expected_cached_tokens = b"cached-token-bundle"
+        self.prior_checkpoints: list[dict | None] = []
 
     def authenticate(self, token_directory, credentials, cached_tokens):
         self.paths.append(token_directory)
@@ -87,7 +88,10 @@ class SyntheticAdapter:
             raise self.auth_error
         return _AuthenticatedTokenSession("synthetic-session", b"rotated-token-bundle")
 
-    def collect(self, session, kind):
+    def collect(self, session, kind, prior_checkpoint):
+        self.prior_checkpoints.append(
+            dict(prior_checkpoint) if prior_checkpoint is not None else None
+        )
         if self.before_collect is not None:
             self.before_collect()
         if self.collection_error is not None:
@@ -1123,6 +1127,56 @@ class IngestionAndCollectionPostgreSQLTest(unittest.TestCase):
         )
         self.assertTrue(all(not path.exists() for path in fallback_adapter.paths))
 
+    def test_incremental_collection_receives_the_latest_committed_checkpoint(self) -> None:
+        _profile, source = self._profile_source(tokens=True)
+        initial_cursor = {"through_date": "2026-01-10", "initial": True}
+        adapter = SyntheticAdapter(
+            _ExternalCollection(
+                self._batch(source, key="checkpoint-initial"),
+                CollectionCheckpoint("initial_sync", initial_cursor),
+            )
+        )
+        application = CoachApplication(
+            self.settings,
+            collection_adapter=adapter,
+            encryption_key=self.key,
+            temporary_root=Path(self.enterContext(TemporaryDirectory())),
+        )
+        initial = application.execute(
+            self.actor_a,
+            RequestCollection(source, "checkpoint-initial", "initial_sync"),
+        )
+        application.execute(self.actor_a, RunCollectionJob(initial.job))
+
+        incremental_cursor = {"through_date": "2026-01-11", "incremental": True}
+        adapter.expected_cached_tokens = b"rotated-token-bundle"
+        adapter.external = _ExternalCollection(
+            self._batch(source, key="checkpoint-incremental"),
+            CollectionCheckpoint("incremental", incremental_cursor),
+        )
+        incremental = application.execute(
+            self.actor_a,
+            RequestCollection(source, "checkpoint-incremental", "incremental"),
+        )
+        application.execute(self.actor_a, RunCollectionJob(incremental.job))
+
+        adapter.external = _ExternalCollection(
+            self._batch(source, key="checkpoint-incremental-2"),
+            CollectionCheckpoint(
+                "incremental", {"through_date": "2026-01-12"}
+            ),
+        )
+        next_incremental = application.execute(
+            self.actor_a,
+            RequestCollection(source, "checkpoint-incremental-2", "incremental"),
+        )
+        application.execute(self.actor_a, RunCollectionJob(next_incremental.job))
+
+        self.assertEqual(
+            adapter.prior_checkpoints,
+            [None, initial_cursor, incremental_cursor],
+        )
+
     def test_initial_sync_tracer_rotates_before_collection_and_is_durable_and_redacted(self) -> None:
         profile, source = self._profile_source(tokens=True)
         batch = self._batch(source, key="initial-sync-capture")
@@ -1852,7 +1906,7 @@ class IngestionAndCollectionPostgreSQLTest(unittest.TestCase):
                     handle = handle.removeprefix("rotated-")
                 return _AuthenticatedTokenSession(handle, f"rotated-{handle}".encode())
 
-            def collect(self, handle, kind):
+            def collect(self, handle, kind, prior_checkpoint):
                 with self.lock:
                     self.active += 1
                     self.maximum = max(self.maximum, self.active)
